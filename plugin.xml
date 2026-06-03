@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<plugin id="@globules-io/cordova-plugin-video-recorder"
+        version="1.0.0"
+        xmlns="http://apache.org/cordova/ns/plugins/1.0"
+        xmlns:android="http://schemas.android.com/apk/res/android">
+     <name>VideoRecorder</name>
+     <js-module src="www/VideoRecorder.js" name="VideoRecorder">
+          <clobbers target="VideoRecorder" />
+     </js-module>
+     <!-- ANDROID -->
+     <platform name="android">
+          <config-file target="AndroidManifest.xml" parent="/manifest">
+               <uses-permission android:name="android.permission.CAMERA" />
+               <uses-permission android:name="android.permission.RECORD_AUDIO" />
+               <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
+               <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+               <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
+               <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+          </config-file>
+          <config-file target="AndroidManifest.xml" parent="/manifest/application">
+               <service
+                android:name="io.globules.VideoRecorder.RecordingService"
+                android:exported="false"
+                android:foregroundServiceType="camera|microphone" />
+          </config-file>
+          <source-file src="src/android/VideoRecorder.kt"
+                     target-dir="io/globules/VideoRecorder" />
+          <source-file src="src/android/RecordingService.kt"
+                     target-dir="io/globules/VideoRecorder" />
+          <config-file target="config.xml" parent="/*">
+               <feature name="VideoRecorder">
+                    <param name="android-package" value="io.globules.VideoRecorder" />
+                    <param name="onload" value="true"/>
+               </feature>
+          </config-file>
+     </platform>
+     <!-- iOS -->
+     <platform name="ios">
+          <config-file target="*-Info.plist" parent="NSCameraUsageDescription">
+               <string>Need camera access for video recording.</string>
+          </config-file>
+          <config-file target="*-Info.plist" parent="NSMicrophoneUsageDescription">
+               <string>Need microphone access for video recording.</string>
+          </config-file>
+          <config-file target="*-Info.plist" parent="UIBackgroundModes">
+               <array>
+                    <string>audio</string>
+               </array>
+          </config-file>
+          <config-file target="config.xml" parent="/*">
+               <feature name="VideoRecorder">
+                    <param name="ios-package" value="VideoRecorder"/>
+                    <param name="onload" value="true"/>
+               </feature>
+          </config-file>
+          <source-file src="src/ios/VideoRecorder.swift" />
+     </platform>
+</plugin>

@@ -1,0 +1,25 @@
+{
+     "name": "@globules-io/cordova-plugin-video-recorder",
+     "version": "1.0.0",
+     "description": "Capture video natively",
+     "cordova": {
+          "id": "@globules-io/cordova-plugin-video-recorder",
+          "platforms": [
+               "android",
+               "ios"
+          ]
+     },
+     "repository": {
+          "type": "git",
+          "url": "https://github.com/globules-io/cordova-plugin-video-recorder"
+     },
+     "keywords": [
+          "cordova",
+          "video",
+          "capture",
+          "ios",
+          "android"
+     ],
+     "author": "globules.io",
+     "license": "MIT"
+}
