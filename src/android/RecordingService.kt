@@ -1,4 +1,4 @@
-package io.globules.VideoRecorder
+package io.globules.videorecorder
 
 import android.app.Notification
 import android.app.NotificationChannel
@@ -6,6 +6,7 @@ import android.app.NotificationManager
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.hardware.camera2.*
 import android.media.MediaRecorder
 import android.os.Build
@@ -37,11 +38,23 @@ class RecordingService : Service() {
      private var cameraFacing: Int = CameraCharacteristics.LENS_FACING_BACK
 
      override fun onCreate() {
-          super.onCreate()
-          cameraManager = getSystemService(Context.CAMERA_SERVICE) as CameraManager
-          createNotificationChannel()
-          startForeground(1, buildNotification())
-     }
+		super.onCreate()
+		cameraManager = getSystemService(Context.CAMERA_SERVICE) as CameraManager
+		createNotificationChannel()
+
+		val notification = buildNotification()
+
+		if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+			startForeground(
+				1,
+				notification,
+				ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA
+			)
+		} else {
+			startForeground(1, notification)
+		}
+	}
+
 
      override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
           if (intent?.action == "STOP_RECORDING") {

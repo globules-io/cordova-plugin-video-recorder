@@ -4,6 +4,11 @@
         xmlns="http://apache.org/cordova/ns/plugins/1.0"
         xmlns:android="http://schemas.android.com/apk/res/android">
      <name>VideoRecorder</name>
+      <engines>
+          <engine name="cordova" version=">=10.0.0" />
+          <engine name="cordova-android" version=">=10.1.1" />
+          <engine name="cordova-ios" version=">=7.0.0" />
+     </engines>
      <js-module src="www/VideoRecorder.js" name="VideoRecorder">
           <clobbers target="VideoRecorder" />
      </js-module>
@@ -15,21 +20,18 @@
                <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
                <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
                <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
-               <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
           </config-file>
           <config-file target="AndroidManifest.xml" parent="/manifest/application">
                <service
-                android:name="io.globules.VideoRecorder.RecordingService"
+                android:name="io.globules.videorecorder.RecordingService"
                 android:exported="false"
-                android:foregroundServiceType="camera|microphone" />
+                android:foregroundServiceType="camera" />
           </config-file>
-          <source-file src="src/android/VideoRecorder.kt"
-                     target-dir="io/globules/VideoRecorder" />
-          <source-file src="src/android/RecordingService.kt"
-                     target-dir="io/globules/VideoRecorder" />
-          <config-file target="config.xml" parent="/*">
+          <source-file src="src/android/VideoRecorder.kt" target-dir="src/main/java/io/globules/videorecorder" />
+          <source-file src="src/android/RecordingService.kt" target-dir="src/main/java/io/globules/videorecorder" />
+          <config-file target="res/xml/config.xml" parent="/*">
                <feature name="VideoRecorder">
-                    <param name="android-package" value="io.globules.VideoRecorder" />
+                    <param name="android-package" value="io.globules.videorecorder.VideoRecorder" />
                     <param name="onload" value="true"/>
                </feature>
           </config-file>
