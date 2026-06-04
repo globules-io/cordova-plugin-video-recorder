@@ -11,7 +11,7 @@
      },
      "repository": {
           "type": "git",
-          "url": "https://github.com/globules-io/cordova-plugin-video-recorder"
+          "url": "git+https://github.com/globules-io/cordova-plugin-video-recorder.git"
      },
      "keywords": [
           "cordova",
