@@ -12,7 +12,7 @@ iOS
 
 ## JS API
 Start Recording
-```bash
+```js
 VideoRecorder.start({
      camera: "back",          // "front" or "back"
      maxLength: 0,            // 0 = unlimited
@@ -22,12 +22,13 @@ VideoRecorder.start({
 ```
 
 Stop Recording
-```bash
+```js
 VideoRecorder.stop();
 ```
 
 Playback
-```bash
+cordova-plugin-file is needed for resolveLocalFileSystemURL
+```js
 document.addEventListener("VideoRecorderFinished", e => {
     const fileUrl = e.detail.file;
     window.resolveLocalFileSystemURL(fileUrl, entry => {
