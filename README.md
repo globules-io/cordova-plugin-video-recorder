@@ -27,6 +27,7 @@ VideoRecorder.stop();
 ```
 
 Playback
+
 cordova-plugin-file is needed for resolveLocalFileSystemURL
 ```js
 document.addEventListener("VideoRecorderFinished", e => {
