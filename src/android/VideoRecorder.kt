@@ -30,58 +30,59 @@ class VideoRecorder : CordovaPlugin() {
     }
 
     private fun startRecording(args: JSONArray, callbackContext: CallbackContext) {
-		val activity = cordova.activity ?: run {
-			callbackContext.error("No activity")
-			return
-		}
+        val activity = cordova.activity ?: run {
+            callbackContext.error("No activity")
+            return
+        }
 
-		currentCallback = callbackContext
+        currentCallback = callbackContext
 
-		val options: JSONObject = if (args.length() > 0 && args.optJSONObject(0) != null) {
-			args.optJSONObject(0)
-		} else {
-			JSONObject()
-		}
+        val options: JSONObject = if (args.length() > 0 && args.optJSONObject(0) != null) {
+            args.optJSONObject(0)
+        } else {
+            JSONObject()
+        }
 
-		val resolution = options.optString("resolution", "1920x1080")
-		val bitrate = options.optInt("bitrate", 10_000_000)
-		val maxLength = options.optInt("maxLength", 0)
-		val camera = options.optString("camera", "back")
+        val resolution = options.optString("resolution", "1920x1080")
+        val bitrate = options.optInt("bitrate", 10_000_000)
+        val maxLength = options.optInt("maxLength", 0)
+        val camera = options.optString("camera", "back")
+        val saveToGallery = options.optBoolean("saveToGallery", false)
 
-		RecordingService.stopWithCallback = { filePath ->
-			val safePath = filePath ?: ""
+        RecordingService.stopWithCallback = { filePath ->
+            val safePath = filePath ?: ""
 
-			val js = """
-				document.dispatchEvent(new CustomEvent('VideoRecorderFinished', {
-					detail: { file: '$safePath' }
-				}));
-			""".trimIndent()
+            val js = """
+                document.dispatchEvent(new CustomEvent('VideoRecorderFinished', {
+                    detail: { file: '$safePath' }
+                }));
+            """.trimIndent()
 
-			activity.runOnUiThread {
-				webView.loadUrl("javascript:$js")
-			}
+            activity.runOnUiThread {
+                webView.loadUrl("javascript:$js")
+            }
 
-			currentCallback?.success(safePath)
-			currentCallback = null
-		}
+            currentCallback?.success(safePath)
+            currentCallback = null
+        }
 
-		val intent = Intent(activity, RecordingService::class.java).apply {
-			action = "START_RECORDING"
-			putExtra("resolution", resolution)
-			putExtra("bitrate", bitrate)
-			putExtra("maxLength", maxLength)
-			putExtra("camera", camera)
-		}
+        val intent = Intent(activity, RecordingService::class.java).apply {
+            action = "START_RECORDING"
+            putExtra("resolution", resolution)
+            putExtra("bitrate", bitrate)
+            putExtra("maxLength", maxLength)
+            putExtra("camera", camera)
+            putExtra("saveToGallery", saveToGallery)   // ⭐ REQUIRED NEW LINE
+        }
 
-		activity.runOnUiThread {
-			if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-				activity.startForegroundService(intent)
-			} else {
-				activity.startService(intent)
-			}
-		}
-	}
-
+        activity.runOnUiThread {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                activity.startForegroundService(intent)
+            } else {
+                activity.startService(intent)
+            }
+        }
+    }
 
     private fun stopRecording(callbackContext: CallbackContext) {
         val activity = cordova.activity ?: run {
