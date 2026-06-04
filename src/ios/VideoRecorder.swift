@@ -27,7 +27,7 @@ class VideoRecorder: CDVPlugin {
         // maxLength
         maxLengthSec = options["maxLength"] as? Int ?? 0
 
-        // bitrate
+        // bitrate (not directly applied on iOS with AVCaptureMovieFileOutput, but kept for API parity)
         bitrate = options["bitrate"] as? Int ?? 10_000_000
 
         // resolution
@@ -67,16 +67,37 @@ class VideoRecorder: CDVPlugin {
     }
 
     private func setupSession() {
-        captureSession = AVCaptureSession()
-        captureSession?.beginConfiguration()
+        let session = AVCaptureSession()
+        captureSession = session
+        session.beginConfiguration()
 
-        // Map bitrate to preset
-        if bitrate >= 20_000_000 {
-            captureSession?.sessionPreset = .high
-        } else if bitrate >= 8_000_000 {
-            captureSession?.sessionPreset = .medium
+        // Map resolution to preset
+        if videoWidth >= 3840 || videoHeight >= 2160 {
+            if session.canSetSessionPreset(.hd4K3840x2160) {
+                session.sessionPreset = .hd4K3840x2160
+            } else if session.canSetSessionPreset(.hd1920x1080) {
+                session.sessionPreset = .hd1920x1080
+            } else {
+                session.sessionPreset = .high
+            }
+        } else if videoWidth >= 1920 || videoHeight >= 1080 {
+            if session.canSetSessionPreset(.hd1920x1080) {
+                session.sessionPreset = .hd1920x1080
+            } else {
+                session.sessionPreset = .high
+            }
+        } else if videoWidth >= 1280 || videoHeight >= 720 {
+            if session.canSetSessionPreset(.hd1280x720) {
+                session.sessionPreset = .hd1280x720
+            } else {
+                session.sessionPreset = .medium
+            }
         } else {
-            captureSession?.sessionPreset = .low
+            if session.canSetSessionPreset(.vga640x480) {
+                session.sessionPreset = .vga640x480
+            } else {
+                session.sessionPreset = .low
+            }
         }
 
         // Select camera
@@ -93,30 +114,32 @@ class VideoRecorder: CDVPlugin {
 
         guard let vDevice = videoDevice,
               let videoInput = try? AVCaptureDeviceInput(device: vDevice),
-              captureSession!.canAddInput(videoInput) else {
+              session.canAddInput(videoInput) else {
+            session.commitConfiguration()
             return
         }
-        captureSession!.addInput(videoInput)
+        session.addInput(videoInput)
 
         // Audio
         if let audioDevice = AVCaptureDevice.default(for: .audio),
            let audioInput = try? AVCaptureDeviceInput(device: audioDevice),
-           captureSession!.canAddInput(audioInput) {
-            captureSession!.addInput(audioInput)
+           session.canAddInput(audioInput) {
+            session.addInput(audioInput)
         }
 
         // Movie output
         let movieOutput = AVCaptureMovieFileOutput()
-        if captureSession!.canAddOutput(movieOutput) {
-            captureSession!.addOutput(movieOutput)
+        if session.canAddOutput(movieOutput) {
+            session.addOutput(movieOutput)
             self.movieOutput = movieOutput
         }
 
-        captureSession?.commitConfiguration()
+        session.commitConfiguration()
     }
 
     private func startRecording() {
-        guard let movieOutput = self.movieOutput else { return }
+        guard let movieOutput = self.movieOutput,
+              let session = self.captureSession else { return }
 
         // Output file
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
@@ -150,7 +173,7 @@ class VideoRecorder: CDVPlugin {
             }
         }
 
-        captureSession?.startRunning()
+        session.startRunning()
         movieOutput.startRecording(to: fileUrl, recordingDelegate: self)
     }
 
@@ -159,7 +182,7 @@ class VideoRecorder: CDVPlugin {
         stopTimer = nil
 
         movieOutput?.stopRecording()
-        captureSession?.stopRunning()
+        // captureSession will be stopped in didFinishRecording
     }
 
     private func startBackgroundTask() {
@@ -182,6 +205,15 @@ extension VideoRecorder: AVCaptureFileOutputRecordingDelegate {
                     didFinishRecordingTo outputFileURL: URL,
                     from connections: [AVCaptureConnection],
                     error: Error?) {
+
+        // Stop session here to avoid killing recording too early
+        captureSession?.stopRunning()
+        captureSession = nil
+        movieOutput = nil
+
+        // Deactivate audio session
+        let audioSession = AVAudioSession.sharedInstance()
+        try? audioSession.setActive(false)
 
         endBackgroundTask()
 
