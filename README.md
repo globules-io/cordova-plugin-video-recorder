@@ -29,12 +29,14 @@ VideoRecorder.stop();
 Playback
 ```bash
 document.addEventListener("VideoRecorderFinished", e => {
-  const file = e.detail.file;
-  console.log("Video saved:", file);
-  
-  const video = document.getElementById("preview");
-  video.src = file;
-  video.load();
-  video.play();
+    const fileUrl = e.detail.file;
+    window.resolveLocalFileSystemURL(fileUrl, entry => {
+        const url = entry.toURL();
+        console.log("Resolved:", url);
+        //set as source to video element on page
+        document.getElementById("preview").src = url;
+    }, err => {
+        console.log("resolve error", err);
+    });
 });
 ```
