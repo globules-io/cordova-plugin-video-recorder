@@ -17,7 +17,8 @@ VideoRecorder.start({
      camera: "back",          // "front" or "back"
      maxLength: 0,            // 0 = unlimited
      resolution: "1920x1080", // WIDTHxHEIGHT
-     bitrate: 10000000        // bits per second
+     bitrate: 10000000,       // bits per second
+     saveToGallery: false     // save video to gallery
 });
 ```
 

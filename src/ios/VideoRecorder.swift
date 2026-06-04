@@ -184,8 +184,6 @@ class VideoRecorder: CDVPlugin {
         }
     }
 
-    // MARK: - Save to Photos + Export
-
     private func saveToPhotosAndExport(url: URL) {
         NSLog("[VideoRecorder] saveToPhotosAndExport called for \(url.path)")
 
