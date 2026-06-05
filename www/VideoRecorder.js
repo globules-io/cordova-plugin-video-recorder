@@ -9,6 +9,7 @@ var VideoRecorder = {
           // - resolution: "WIDTHxHEIGHT" (e.g. "1920x1080")
           // - bitrate: number (bits per second)
           // - saveToGallery: boolean
+          // - watermark: false
           exec(success, error, 'VideoRecorder', 'start', [options]);
      },
 

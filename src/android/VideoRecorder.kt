@@ -49,30 +49,50 @@ class VideoRecorder : CordovaPlugin() {
         val camera = options.optString("camera", "back")
         val saveToGallery = options.optBoolean("saveToGallery", false)
 
-        RecordingService.stopWithCallback = { filePath ->
-            val safePath = filePath ?: ""
+        // ⭐ WATERMARK OPTIONS
+        var watermarkEnabled = false
+        var watermarkImage: String? = null
+        var watermarkPosition = "bottomright"
 
-            val js = """
-                document.dispatchEvent(new CustomEvent('VideoRecorderFinished', {
-                    detail: { file: '$safePath' }
-                }));
-            """.trimIndent()
-
-            activity.runOnUiThread {
-                webView.loadUrl("javascript:$js")
-            }
-
-            currentCallback?.success(safePath)
-            currentCallback = null
+        val wm: Any? = options.opt("watermark")
+        if (wm is JSONObject) {
+            watermarkEnabled = true
+            watermarkImage = if (wm.has("image")) wm.getString("image") else null
+            watermarkPosition = wm.optString("position", "bottomright")
         }
 
+        // ⭐ CALLBACK FROM RecordingService
+        RecordingService.stopWithCallback = { filePath: String? ->
+			val safePath: String = filePath ?: ""
+
+			val js = """
+				document.dispatchEvent(new CustomEvent('VideoRecorderFinished', {
+					detail: { file: '$safePath' }
+				}));
+			""".trimIndent()
+
+			activity.runOnUiThread {
+				webView.loadUrl("javascript:$js")
+			}
+
+			currentCallback?.success(safePath as String)
+			currentCallback = null
+		}
+
+
+        // ⭐ START SERVICE WITH ALL OPTIONS
         val intent = Intent(activity, RecordingService::class.java).apply {
             action = "START_RECORDING"
             putExtra("resolution", resolution)
             putExtra("bitrate", bitrate)
             putExtra("maxLength", maxLength)
             putExtra("camera", camera)
-            putExtra("saveToGallery", saveToGallery)   // ⭐ REQUIRED NEW LINE
+            putExtra("saveToGallery", saveToGallery)
+
+            // ⭐ WATERMARK EXTRAS
+            putExtra("watermarkEnabled", watermarkEnabled)
+            putExtra("watermarkImage", watermarkImage)
+            putExtra("watermarkPosition", watermarkPosition)
         }
 
         activity.runOnUiThread {
