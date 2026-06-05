@@ -267,11 +267,12 @@ class RecordingService : Service() {
         outputFile = null
 
         if (saveToGallery && originalPath != null) {
-            val finalUri = moveToGallery(originalPath)
-            stopWithCallback?.invoke(finalUri)
-        } else {
-            stopWithCallback?.invoke(originalPath)
-        }
+          val finalUri = moveToGallery(originalPath)
+          stopWithCallback?.invoke(finalUri) 
+          } else {
+               stopWithCallback?.invoke("file://$originalPath")
+          }
+
 
         stopWithCallback = null
         stopForeground(true)
