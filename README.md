@@ -33,8 +33,8 @@ Watermark
 VideoRecorder.start({
      ...,
      watermark: {
-          image:'path_to_image',   //relative to cordova www
-          position: 'bottomright'  //bottomright, topright, bottomleft, topleft
+          image: "path_to_image",  //relative to cordova www
+          position: "bottomright"  //bottomright, topright, bottomleft, topleft
      }
 });
 ```
