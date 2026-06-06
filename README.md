@@ -14,17 +14,29 @@ iOS
 Start Recording
 ```js
 VideoRecorder.start({
-     camera: "back",          // "front" or "back"
-     maxLength: 0,            // 0 = unlimited
-     resolution: "1920x1080", // WIDTHxHEIGHT
-     bitrate: 10000000,       // bits per second
-     saveToGallery: false     // save video to gallery
+     camera: "back",           // "front" or "back"
+     maxLength: 0,             // 0 = unlimited
+     resolution: "1920x1080",  // WIDTHxHEIGHT
+     bitrate: 10000000,        // bits per second
+     saveToGallery: false,     // save video to gallery
+     watermark: false          // see watermark
 });
 ```
 
 Stop Recording
 ```js
 VideoRecorder.stop();
+```
+
+Watermark
+```js
+VideoRecorder.start({
+     ...,
+     watermark: {
+          image:'path_to_image',   //relative to cordova www
+          position: 'bottomright'  //bottomright, topright, bottomleft, topleft
+     }
+});
 ```
 
 Playback
