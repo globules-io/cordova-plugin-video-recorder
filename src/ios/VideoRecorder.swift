@@ -2,6 +2,7 @@ import Foundation
 import AVFoundation
 import Photos
 import Cordova
+import UIKit
 
 @objc(VideoRecorder)
 class VideoRecorder: CDVPlugin {
@@ -19,6 +20,11 @@ class VideoRecorder: CDVPlugin {
     var stopTimer: Timer?
     var cameraPosition: AVCaptureDevice.Position = .back
     var saveToGallery: Bool = false
+
+    // Watermark options
+    var watermarkEnabled: Bool = false
+    var watermarkImage: String?
+    var watermarkPosition: String = "bottomright"
 
     @objc(start:)
     func start(command: CDVInvokedUrlCommand) {
@@ -45,7 +51,17 @@ class VideoRecorder: CDVPlugin {
             cameraPosition = cam.lowercased() == "front" ? .front : .back
         }
 
-        NSLog("[VideoRecorder] start called, maxLength=\(maxLengthSec), resolution=\(videoWidth)x\(videoHeight), camera=\(cameraPosition == .front ? "front" : "back"), saveToGallery=\(saveToGallery)")
+        // Watermark options: watermark: { image, position }
+        if let wm = options["watermark"] as? [String: Any] {
+            watermarkEnabled = true
+            watermarkImage = wm["image"] as? String
+            watermarkPosition = (wm["position"] as? String) ?? "bottomright"
+        } else {
+            watermarkEnabled = false
+            watermarkImage = nil
+        }
+
+        NSLog("[VideoRecorder] start called, maxLength=\(maxLengthSec), requested=\(videoWidth)x\(videoHeight), camera=\(cameraPosition == .front ? "front" : "back"), saveToGallery=\(saveToGallery), watermarkEnabled=\(watermarkEnabled)")
 
         startBackgroundTask()
         setupSession()
@@ -67,6 +83,7 @@ class VideoRecorder: CDVPlugin {
         captureSession = session
         session.beginConfiguration()
 
+        // Use requested resolution only to choose preset (quality), not orientation
         if videoWidth >= 3840 || videoHeight >= 2160 {
             session.sessionPreset = session.canSetSessionPreset(.hd4K3840x2160) ? .hd4K3840x2160 : .hd1920x1080
         } else if videoWidth >= 1920 || videoHeight >= 1080 {
@@ -125,6 +142,7 @@ class VideoRecorder: CDVPlugin {
         try? audioSession.setActive(true)
 
         if let connection = movieOutput.connection(with: .video) {
+            // Let AVFoundation handle orientation via preferredTransform.
             connection.videoOrientation = .portrait
             if connection.isVideoStabilizationSupported {
                 connection.preferredVideoStabilizationMode = .auto
@@ -184,6 +202,215 @@ class VideoRecorder: CDVPlugin {
         }
     }
 
+    // MARK: - Watermark helpers
+
+    private func loadWatermarkImage() -> UIImage? {
+        guard let name = watermarkImage, !name.isEmpty else { return nil }
+
+        let components = (name as NSString).pathComponents
+        let fileName = (components.last ?? name) as NSString
+        let dir = components.dropLast().joined(separator: "/")
+
+        let resourceName = fileName.deletingPathExtension
+        let ext = fileName.pathExtension
+
+        if let path = Bundle.main.path(forResource: resourceName,
+                                       ofType: ext.isEmpty ? nil : ext,
+                                       inDirectory: dir.isEmpty ? "www" : "www/\(dir)") {
+            return UIImage(contentsOfFile: path)
+        }
+
+        if let path = Bundle.main.path(forResource: name, ofType: nil, inDirectory: "www") {
+            return UIImage(contentsOfFile: path)
+        }
+
+        return nil
+    }
+
+    private func watermarkFrame(videoSize: CGSize, wmSize: CGSize, position: String) -> CGRect {
+        let padding: CGFloat = 10
+        let w = wmSize.width
+        let h = wmSize.height
+
+        switch position.lowercased() {
+        case "topleft":
+            return CGRect(x: padding,
+                          y: padding,
+                          width: w,
+                          height: h)
+
+        case "topright":
+            return CGRect(x: videoSize.width - w - padding,
+                          y: padding,
+                          width: w,
+                          height: h)
+
+        case "bottomleft":
+            return CGRect(x: padding,
+                          y: videoSize.height - h - padding,
+                          width: w,
+                          height: h)
+
+        default: // bottomright
+            return CGRect(x: videoSize.width - w - padding,
+                          y: videoSize.height - h - padding,
+                          width: w,
+                          height: h)
+        }
+    }
+
+
+
+    /// Apply watermark if enabled.
+    private func applyWatermark(to inputURL: URL, completion: @escaping (URL?) -> Void) {
+        guard watermarkEnabled, let wmImage = loadWatermarkImage() else {
+            completion(inputURL)
+            return
+        }
+
+        let asset = AVAsset(url: inputURL)
+        let mixComposition = AVMutableComposition()
+
+        guard
+            let videoTrack = asset.tracks(withMediaType: .video).first,
+            let compositionVideoTrack = mixComposition.addMutableTrack(
+                withMediaType: .video,
+                preferredTrackID: kCMPersistentTrackID_Invalid
+            )
+        else {
+            NSLog("[VideoRecorder] Failed to create composition video track")
+            completion(nil)
+            return
+        }
+
+        do {
+            try compositionVideoTrack.insertTimeRange(
+                CMTimeRange(start: .zero, duration: asset.duration),
+                of: videoTrack,
+                at: .zero
+            )
+        } catch {
+            NSLog("[VideoRecorder] Failed to insert video track: \(error)")
+            completion(nil)
+            return
+        }
+
+        compositionVideoTrack.preferredTransform = videoTrack.preferredTransform
+
+        // Copy audio if present
+        if let audioTrack = asset.tracks(withMediaType: .audio).first,
+           let compositionAudioTrack = mixComposition.addMutableTrack(
+               withMediaType: .audio,
+               preferredTrackID: kCMPersistentTrackID_Invalid
+           ) {
+            try? compositionAudioTrack.insertTimeRange(
+                CMTimeRange(start: .zero, duration: asset.duration),
+                of: audioTrack,
+                at: .zero
+            )
+        }
+
+        let videoComposition = AVMutableVideoComposition()
+        videoComposition.frameDuration = CMTime(value: 1, timescale: 30)
+
+        let naturalSize = videoTrack.naturalSize
+        let transform = videoTrack.preferredTransform
+
+        // Compute final displayed size after applying transform
+        let displayWidth = abs(naturalSize.width * transform.a) + abs(naturalSize.height * transform.c)
+        let displayHeight = abs(naturalSize.width * transform.b) + abs(naturalSize.height * transform.d)
+        let finalSize = CGSize(width: displayWidth, height: displayHeight)
+
+        videoComposition.renderSize = finalSize
+
+        NSLog("[VideoRecorder] applyWatermark: natural=\(naturalSize), final=\(finalSize), position=\(watermarkPosition)")
+
+        // Video composition instruction
+        let instruction = AVMutableVideoCompositionInstruction()
+        instruction.timeRange = CMTimeRange(start: .zero, duration: asset.duration)
+
+        let layerInstruction = AVMutableVideoCompositionLayerInstruction(assetTrack: compositionVideoTrack)
+        layerInstruction.setTransform(transform, at: .zero)
+
+        instruction.layerInstructions = [layerInstruction]
+        videoComposition.instructions = [instruction]
+
+        // Layer setup
+        let parentLayer = CALayer()
+        parentLayer.frame = CGRect(origin: .zero, size: finalSize)
+
+        let videoLayer = CALayer()
+        videoLayer.frame = parentLayer.frame
+        parentLayer.addSublayer(videoLayer)
+
+        // Watermark layer
+        let wmLayer = CALayer()
+        wmLayer.contents = wmImage.cgImage
+        wmLayer.contentsGravity = .resizeAspect  // good for scaling
+
+        // Calculate watermark size (20% of video width)
+        let targetWidth = finalSize.width * 0.20
+        let aspectRatio = wmImage.size.height / wmImage.size.width
+        let targetHeight = targetWidth * aspectRatio
+        let wmSize = CGSize(width: targetWidth, height: targetHeight)
+
+        // Get initial frame using your existing logic
+        var wmFrame = watermarkFrame(
+            videoSize: finalSize,
+            wmSize: wmSize,
+            position: watermarkPosition
+        )
+
+        // === CRITICAL FIX: Handle portrait orientation Y-flip ===
+        let isPortrait = finalSize.height > finalSize.width
+        
+        if isPortrait {
+            // In portrait mode with CoreAnimationTool, the Y axis is often inverted
+            wmFrame.origin.y = finalSize.height - wmFrame.maxY
+        }
+
+        wmLayer.frame = wmFrame
+        wmLayer.opacity = 1.0
+
+        parentLayer.addSublayer(wmLayer)
+
+        videoComposition.animationTool = AVVideoCompositionCoreAnimationTool(
+            postProcessingAsVideoLayer: videoLayer,
+            in: parentLayer
+        )
+
+        // Export
+        let tempDir = FileManager.default.temporaryDirectory
+        let outName = "VID_WM_\(Int(Date().timeIntervalSince1970)).mov"
+        let outURL = tempDir.appendingPathComponent(outName)
+
+        guard let exporter = AVAssetExportSession(asset: mixComposition,
+                                                  presetName: AVAssetExportPresetHighestQuality) else {
+            NSLog("[VideoRecorder] Failed to create AVAssetExportSession")
+            completion(nil)
+            return
+        }
+
+        exporter.outputURL = outURL
+        exporter.outputFileType = .mov
+        exporter.shouldOptimizeForNetworkUse = true
+        exporter.videoComposition = videoComposition
+
+        exporter.exportAsynchronously {
+            switch exporter.status {
+            case .completed:
+                NSLog("[VideoRecorder] Watermark applied successfully")
+                completion(outURL)
+            case .failed:
+                NSLog("[VideoRecorder] Watermark export failed: \(exporter.error?.localizedDescription ?? "unknown")")
+                completion(nil)
+            default:
+                NSLog("[VideoRecorder] Watermark export status: \(exporter.status.rawValue)")
+                completion(nil)
+            }
+        }
+    }
+
     private func saveToPhotosAndExport(url: URL) {
         NSLog("[VideoRecorder] saveToPhotosAndExport called for \(url.path)")
 
@@ -198,11 +425,7 @@ class VideoRecorder: CDVPlugin {
                 NSLog("[VideoRecorder] Error saving to Photos: \(String(describing: error))")
             }
 
-            do {
-                try FileManager.default.removeItem(at: url)
-            } catch {
-                NSLog("[VideoRecorder] Failed to delete original file: \(String(describing: error))")
-            }
+            try? FileManager.default.removeItem(at: url)
 
             guard success, let localId = savedLocalId else {
                 NSLog("[VideoRecorder] Save failed or missing localIdentifier")
@@ -232,7 +455,7 @@ class VideoRecorder: CDVPlugin {
         options.deliveryMode = .highQualityFormat
         options.isNetworkAccessAllowed = false
 
-        PHImageManager.default().requestAVAsset(forVideo: asset, options: options) { avAsset, _, error in
+        PHImageManager.default().requestAVAsset(forVideo: asset, options: options) { avAsset, _, _ in
 
             if avAsset == nil {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
@@ -290,10 +513,14 @@ extension VideoRecorder: AVCaptureFileOutputRecordingDelegate {
         try? AVAudioSession.sharedInstance().setActive(false)
         endBackgroundTask()
 
-        if saveToGallery {
-            saveToPhotosAndExport(url: outputFileURL)
-        } else {
-            dispatchFinalUrl("file://\(outputFileURL.path)")
+        applyWatermark(to: outputFileURL) { processedURL in
+            let finalURL = processedURL ?? outputFileURL
+
+            if self.saveToGallery {
+                self.saveToPhotosAndExport(url: finalURL)
+            } else {
+                self.dispatchFinalUrl("file://\(finalURL.path)")
+            }
         }
     }
 }

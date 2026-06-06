@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <plugin id="@globules-io/cordova-plugin-video-recorder"
-        version="1.1.1"
+        version="1.2.0"
         xmlns="http://apache.org/cordova/ns/plugins/1.0"
         xmlns:android="http://schemas.android.com/apk/res/android">
      <name>VideoRecorder</name>
@@ -35,6 +35,9 @@
                     <param name="onload" value="true"/>
                </feature>
           </config-file>
+			<lib-file src="src/android/libs/ffmpeg-kit-full-gpl-6.0-2.LTS.aar" />
+			<framework src="com.arthenica:smart-exception-java:0.2.1" type="gradle" />
+			<framework src="src/android/build.gradle" custom="true" type="gradleReference" />
      </platform>
      <!-- iOS -->
      <platform name="ios">
