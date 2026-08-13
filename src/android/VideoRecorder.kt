@@ -4,12 +4,14 @@ import android.content.Intent
 import android.os.Build
 import org.apache.cordova.CallbackContext
 import org.apache.cordova.CordovaPlugin
+import org.apache.cordova.PluginResult
 import org.json.JSONArray
 import org.json.JSONObject
 
 class VideoRecorder : CordovaPlugin() {
 
     private var currentCallback: CallbackContext? = null
+    private var previewCallback: CallbackContext? = null
 
     override fun execute(
         action: String,
@@ -23,6 +25,11 @@ class VideoRecorder : CordovaPlugin() {
             }
             "stop" -> {
                 stopRecording(callbackContext)
+                true
+            }
+            "preview" -> {
+                val enable = if (args.length() > 0) args.optBoolean(0, false) else false
+                handlePreview(enable, callbackContext)
                 true
             }
             else -> false
@@ -49,7 +56,7 @@ class VideoRecorder : CordovaPlugin() {
         val camera = options.optString("camera", "back")
         val saveToGallery = options.optBoolean("saveToGallery", false)
 
-        // ⭐ WATERMARK OPTIONS
+        // WATERMARK OPTIONS
         var watermarkEnabled = false
         var watermarkImage: String? = null
         var watermarkPosition = "bottomright"
@@ -61,26 +68,25 @@ class VideoRecorder : CordovaPlugin() {
             watermarkPosition = wm.optString("position", "bottomright")
         }
 
-        // ⭐ CALLBACK FROM RecordingService
+        // CALLBACK FROM RecordingService
         RecordingService.stopWithCallback = { filePath: String? ->
-			val safePath: String = filePath ?: ""
+            val safePath: String = filePath ?: ""
 
-			val js = """
-				document.dispatchEvent(new CustomEvent('VideoRecorderFinished', {
-					detail: { file: '$safePath' }
-				}));
-			""".trimIndent()
+            val js = """
+                document.dispatchEvent(new CustomEvent('VideoRecorderFinished', {
+                    detail: { file: '$safePath' }
+                }));
+            """.trimIndent()
 
-			activity.runOnUiThread {
-				webView.loadUrl("javascript:$js")
-			}
+            activity.runOnUiThread {
+                webView.loadUrl("javascript:$js")
+            }
 
-			currentCallback?.success(safePath as String)
-			currentCallback = null
-		}
+            currentCallback?.success(safePath)
+            currentCallback = null
+        }
 
-
-        // ⭐ START SERVICE WITH ALL OPTIONS
+        // START SERVICE WITH ALL OPTIONS
         val intent = Intent(activity, RecordingService::class.java).apply {
             action = "START_RECORDING"
             putExtra("resolution", resolution)
@@ -89,7 +95,7 @@ class VideoRecorder : CordovaPlugin() {
             putExtra("camera", camera)
             putExtra("saveToGallery", saveToGallery)
 
-            // ⭐ WATERMARK EXTRAS
+            // WATERMARK EXTRAS
             putExtra("watermarkEnabled", watermarkEnabled)
             putExtra("watermarkImage", watermarkImage)
             putExtra("watermarkPosition", watermarkPosition)
@@ -117,4 +123,126 @@ class VideoRecorder : CordovaPlugin() {
         activity.startService(intent)
         callbackContext.success()
     }
+
+    private fun handlePreview(enable: Boolean, callbackContext: CallbackContext) {
+        val activity = cordova.activity ?: run {
+            callbackContext.error("No activity")
+            return
+        }
+
+        if (enable) {
+            // register the Cordova callback first
+            previewCallback = callbackContext
+
+            val startResult = org.apache.cordova.PluginResult(org.apache.cordova.PluginResult.Status.OK, "preview_started")
+            startResult.keepCallback = true
+            try {
+                android.util.Log.d("VideoRecorder", "handlePreview: sending preview_started and keeping callback")
+                previewCallback?.sendPluginResult(startResult)
+            } catch (e: Exception) {
+                previewCallback = null
+                callbackContext.error("Failed to register preview callback: ${e.message}")
+                return
+            }
+
+            // capture activity reference for use inside the lambda
+            val act = cordova.activity
+
+            // set service-side lambda that will be invoked by RecordingService
+            RecordingService.previewFrameCallback = fun(base64Frame: String) {
+                try {
+                    val currentAct = act
+                    if (currentAct == null || currentAct.isFinishing ||
+                        (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.JELLY_BEAN_MR1 && currentAct.isDestroyed)
+                    ) {
+                        android.util.Log.w("VideoRecorder", "preview lambda: activity gone, clearing callback")
+                        RecordingService.previewFrameCallback = null
+                        previewCallback = null
+                        return
+                    }
+
+                    android.util.Log.v("VideoRecorder", "preview lambda: forwarding frame to JS (len=${base64Frame.length})")
+                    val frameResult = org.apache.cordova.PluginResult(org.apache.cordova.PluginResult.Status.OK, base64Frame)
+                    frameResult.keepCallback = true
+                    previewCallback?.sendPluginResult(frameResult)
+                } catch (ex: Exception) {
+                    android.util.Log.w("VideoRecorder", "preview lambda: sendPluginResult failed: ${ex.message}")
+                    RecordingService.previewFrameCallback = null
+                    previewCallback = null
+
+                    try {
+                        val currentAct = act
+                        if (currentAct != null) {
+                            val stopIntent = android.content.Intent(currentAct, RecordingService::class.java).apply { action = "STOP_PREVIEW" }
+                            currentAct.runOnUiThread {
+                                try {
+                                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) currentAct.startForegroundService(stopIntent)
+                                    else currentAct.startService(stopIntent)
+                                } catch (_: Exception) { /* ignore */ }
+                            }
+                        }
+                    } catch (_: Exception) { /* ignore */ }
+                }
+            }
+
+            // now tell the service to start previewing
+            val intent = android.content.Intent(activity, RecordingService::class.java).apply { action = "START_PREVIEW" }
+            activity.runOnUiThread {
+                try {
+                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) activity.startForegroundService(intent)
+                    else activity.startService(intent)
+                } catch (e: Exception) {
+                    RecordingService.previewFrameCallback = null
+                    previewCallback = null
+                    try { callbackContext.error("Failed to start preview service: ${e.message}") } catch (_: Exception) {}
+                }
+            }
+        } else {
+            // stop preview: clear service callback, notify JS once, and send STOP_PREVIEW intent
+            RecordingService.previewFrameCallback = null
+
+            val stopResult = org.apache.cordova.PluginResult(org.apache.cordova.PluginResult.Status.OK, "preview_stopped")
+            stopResult.keepCallback = false
+            try {
+                callbackContext.sendPluginResult(stopResult)
+            } catch (e: Exception) {
+                // ignore send errors
+            }
+
+            previewCallback = null
+
+            val intent = android.content.Intent(activity, RecordingService::class.java).apply { action = "STOP_PREVIEW" }
+            activity.runOnUiThread {
+                try {
+                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) activity.startForegroundService(intent)
+                    else activity.startService(intent)
+                } catch (_: Exception) { /* ignore */ }
+            }
+        }
+    }
+
+    private fun requestStopPreviewFromPlugin() {
+        val act = cordova.activity ?: return
+        try {
+            val stopIntent = android.content.Intent(act, RecordingService::class.java).apply { action = "STOP_PREVIEW" }
+            act.runOnUiThread {
+                try {
+                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) act.startForegroundService(stopIntent)
+                    else act.startService(stopIntent)
+                } catch (_: Exception) {}
+            }
+        } catch (_: Exception) {}
+    }
+
+
+    override fun onPause(multitasking: Boolean) {
+        super.onPause(multitasking)
+        requestStopPreviewFromPlugin()
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        requestStopPreviewFromPlugin()
+    }
+
 }
