@@ -28,8 +28,16 @@ class VideoRecorder : CordovaPlugin() {
                 true
             }
             "preview" -> {
-                val enable = if (args.length() > 0) args.optBoolean(0, false) else false
-                handlePreview(enable, callbackContext)
+                // Accept either:
+                // - an options object (JSONObject) as first arg -> start preview with options
+                // - a boolean as first arg -> start/stop preview (backwards compatible)
+                if (args.length() > 0 && args.optJSONObject(0) != null) {
+                    val opts = args.optJSONObject(0)
+                    handlePreviewWithOptions(opts, callbackContext)
+                } else {
+                    val enable = if (args.length() > 0) args.optBoolean(0, false) else false
+                    handlePreview(enable, callbackContext) // existing boolean path
+                }
                 true
             }
             else -> false
@@ -220,6 +228,97 @@ class VideoRecorder : CordovaPlugin() {
             }
         }
     }
+
+    /**
+     * Start preview using an options object (same shape as start):
+     * { camera: "front"|"back", resolution: "1080x1920", fps: 10 }
+     *
+     * This is a separate function name to avoid signature collision with the boolean overload.
+     */
+    private fun handlePreviewWithOptions(options: JSONObject, callbackContext: CallbackContext) {
+        val activity = cordova.activity ?: run {
+            callbackContext.error("No activity")
+            return
+        }
+
+        // Register the Cordova callback first (same behavior as boolean path)
+        previewCallback = callbackContext
+
+        val startResult = PluginResult(PluginResult.Status.OK, "preview_started")
+        startResult.keepCallback = true
+        try {
+            android.util.Log.d("VideoRecorder", "handlePreviewWithOptions: sending preview_started and keeping callback")
+            previewCallback?.sendPluginResult(startResult)
+        } catch (e: Exception) {
+            previewCallback = null
+            callbackContext.error("Failed to register preview callback: ${e.message}")
+            return
+        }
+
+        // capture activity reference for use inside the lambda
+        val act = cordova.activity
+
+        // set service-side lambda that will be invoked by RecordingService (same as boolean path)
+        RecordingService.previewFrameCallback = fun(base64Frame: String) {
+            try {
+                val currentAct = act
+                if (currentAct == null || currentAct.isFinishing ||
+                    (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR1 && currentAct.isDestroyed)
+                ) {
+                    android.util.Log.w("VideoRecorder", "preview lambda: activity gone, clearing callback")
+                    RecordingService.previewFrameCallback = null
+                    previewCallback = null
+                    return
+                }
+
+                android.util.Log.v("VideoRecorder", "preview lambda: forwarding frame to JS (len=${base64Frame.length})")
+                val frameResult = PluginResult(PluginResult.Status.OK, base64Frame)
+                frameResult.keepCallback = true
+                previewCallback?.sendPluginResult(frameResult)
+            } catch (ex: Exception) {
+                android.util.Log.w("VideoRecorder", "preview lambda: sendPluginResult failed: ${ex.message}")
+                RecordingService.previewFrameCallback = null
+                previewCallback = null
+
+                try {
+                    val currentAct = act
+                    if (currentAct != null) {
+                        val stopIntent = Intent(currentAct, RecordingService::class.java).apply { action = "STOP_PREVIEW" }
+                        currentAct.runOnUiThread {
+                            try {
+                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) currentAct.startForegroundService(stopIntent)
+                                else currentAct.startService(stopIntent)
+                            } catch (_: Exception) { /* ignore */ }
+                        }
+                    }
+                } catch (_: Exception) { /* ignore */ }
+            }
+        }
+
+        // Parse options and forward them as extras to the service
+        val camera = options.optString("camera", "back")
+        val resolution = options.optString("resolution", "")
+        val fps = options.optInt("fps", 0)
+
+        val intent = Intent(activity, RecordingService::class.java).apply {
+            action = "START_PREVIEW"
+            putExtra("camera", camera)
+            if (resolution.isNotEmpty()) putExtra("resolution", resolution)
+            if (fps > 0) putExtra("fps", fps)
+        }
+
+        activity.runOnUiThread {
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) activity.startForegroundService(intent)
+                else activity.startService(intent)
+            } catch (e: Exception) {
+                RecordingService.previewFrameCallback = null
+                previewCallback = null
+                try { callbackContext.error("Failed to start preview service: ${e.message}") } catch (_: Exception) {}
+            }
+        }
+    }
+
 
     private fun requestStopPreviewFromPlugin() {
         val act = cordova.activity ?: return
