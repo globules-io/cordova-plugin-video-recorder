@@ -27,20 +27,68 @@ var VideoRecorder = {
       * preview(false, onStopped, onError)
       *   - onStopped called once when preview stops
       */
-     preview: function (enable, success, error) {
+     preview: function (arg, success, error) {
           // normalize arguments: allow preview(true, callback) or preview(false, callback)
-          if (typeof enable !== 'boolean') {
-               if (typeof success === 'function') success(new Error('first argument must be boolean'));
+          // If first param is a function, treat as start with default options
+          if (typeof arg === 'function') {
+               // preview(callback)
+               success = arg;
+               arg = true;
+          }
+
+          // If arg is undefined, toggle behavior (start if not running, stop if running)
+          // We cannot know running state here, so default to start
+          if (typeof arg === 'undefined') {
+               arg = true;
+          }
+
+          // If arg is an options object -> start preview with options
+          if (arg && typeof arg === 'object' && !Array.isArray(arg)) {
+               exec(success || function () {}, error || function () {}, 'VideoRecorder', 'preview', [arg]);
                return;
           }
-          exec(success || function () {}, error || function () {}, 'VideoRecorder', 'preview', [enable]);
+
+          // If arg is an array, forward it (handles older callers that pass arrays)
+          if (Array.isArray(arg)) {
+               // Examples: [true], [false], [{ camera: 'front', resolution: '1080x1920' }]
+               exec(success || function () {}, error || function () {}, 'VideoRecorder', 'preview', arg);
+               return;
+          }
+
+          // If arg is boolean
+          if (typeof arg === 'boolean') {
+               exec(success || function () {}, error || function () {}, 'VideoRecorder', 'preview', [arg]);
+               return;
+          }
+
+          // If arg is string "start"/"stop"
+          if (typeof arg === 'string') {
+               var lower = arg.toLowerCase();
+               if (lower === 'start') {
+                    exec(success || function () {}, error || function () {}, 'VideoRecorder', 'preview', [true]);
+                    return;
+               } else if (lower === 'stop') {
+                    exec(success || function () {}, error || function () {}, 'VideoRecorder', 'preview', [false]);
+                    return;
+               }
+          }
+
+          // Fallback: treat as start
+          exec(success || function () {}, error || function () {}, 'VideoRecorder', 'preview', [true]);
      },
 
      // Convenience helpers
-     startPreview: function (onFrame, onError) {
-          this.preview(true, onFrame, onError);
+     // startPreview(options, onFrame, onError)
+     startPreview: function (options, onFrame, onError) {
+          // allow startPreview(onFrame) or startPreview(options, onFrame)
+          if (typeof options === 'function') {
+               onFrame = options;
+               options = { fps: 10 };
+          }
+          this.preview(options || { fps: 10 }, onFrame, onError);
      },
 
+     // stopPreview(onStopped, onError)
      stopPreview: function (onStopped, onError) {
           this.preview(false, onStopped, onError);
      },
