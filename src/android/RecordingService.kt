@@ -76,7 +76,7 @@ class RecordingService : Service() {
     private var previewWidth = 1280
     private var previewHeight = 720
     private var previewTargetFps = 15
-    private var previewJpegQuality = 95      
+    private var previewJpegQuality = 90      
     private var previewCameraFacing: Int = CameraCharacteristics.LENS_FACING_BACK
 
     // ---------------------------------------------------------------
@@ -153,6 +153,7 @@ class RecordingService : Service() {
                         val camera = intent.getStringExtra("camera") ?: "back"
                         val resolution = intent.getStringExtra("resolution") ?: "1280x720"
                         val fps = intent.getIntExtra("fps", 15)
+                        val quality = intent.getIntExtra("quality", 90)
 
                         previewCameraFacing = if (camera.lowercase(Locale.US) == "front") {
                             CameraCharacteristics.LENS_FACING_FRONT
@@ -162,7 +163,7 @@ class RecordingService : Service() {
 
                         parseResolution(resolution, isPreview = true)
                         previewTargetFps = if (fps > 0) fps else 15
-                        // No quality parameter any more
+                        previewJpegQuality = quality
 
                         Log.d(TAG, "START_PREVIEW: ${previewWidth}x${previewHeight} @ ${previewTargetFps}fps")
                         startPreviewMode()
@@ -326,7 +327,7 @@ class RecordingService : Service() {
         val chosen = chooseBestSize(cameraId, videoWidth, videoHeight, MediaRecorder::class.java)
         if (chosen != null) {
             if (chosen.width != videoWidth || chosen.height != videoHeight) {
-                Log.d(TAG, "setupMediaRecorder: ${videoWidth}x${videoHeight} ? ${chosen.width}x${chosen.height}")
+                Log.d(TAG, "setupMediaRecorder: ${videoWidth}x${videoHeight} : ${chosen.width}x${chosen.height}")
                 videoWidth = chosen.width
                 videoHeight = chosen.height
             }
