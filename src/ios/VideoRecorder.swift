@@ -162,6 +162,10 @@ class VideoRecorder: CDVPlugin {
             previewTargetFps = fps
         }
 
+        if let quality = options["quality"] as? Int{
+            previewJpegQuality = CGFloat(quality) / 100
+        }
+
         if let cam = options["camera"] as? String {
             previewCameraPosition = cam.lowercased() == "front" ? .front : .back
         }
