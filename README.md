@@ -1,5 +1,6 @@
 # cordova-plugin-video-recorder
-Cordova plugin for Android and iOS to natively record a video and display live preview as base64 (independent)
+Cordova plugin for Android and iOS to natively record a video and display live preview as base64
+Recording and Preview are independent and can operate on different resolutions
 
 ## Installation
 ```bash
@@ -63,22 +64,15 @@ VideoRecorder.startPreview({
 	  resolution: '1074x2136',
 	  fps: 10
 }, (__base64)=>{
-
-//do whatever you want with the base64
-	                  
+//do whatever you want with the base64	                  
 });
-
 //or 
-
 VideoRecorder.preview({...});
-
 ```
 
 Stop Preview 
 ```js
 VideoRecorder.stopPreview();
-
 //or 
-
 VideoRecorder.preview(false);
 ```
