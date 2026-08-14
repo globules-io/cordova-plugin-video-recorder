@@ -60,15 +60,15 @@ document.addEventListener("VideoRecorderFinished", e => {
 Start Preview
 ```js
 VideoRecorder.startPreview({                            
-	  camera: 'front',             // "front" or "back"            
-	  resolution: '1074x2136',     // WIDTHxHEIGHT
-	  fps: 10,                     // frames per second
-	  quality: 90                  // compression
+	  camera: 'front',            // "front" or "back"            
+	  resolution: '1074x2136',    // WIDTHxHEIGHT
+	  fps: 10,                    // frames per second
+	  quality: 90                 // compression
 }, (__base64)=>{
 //do whatever you want with the base64	                  
 });
 //or 
-VideoRecorder.preview({...});
+VideoRecorder.preview({...}, (__base64)=>{});
 ```
 
 Stop Preview 
