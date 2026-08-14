@@ -7,7 +7,7 @@ import UIKit
 @objc(VideoRecorder)
 class VideoRecorder: CDVPlugin {
 
-    // Recording state
+    // MARK: - Recording state
     var captureSession: AVCaptureSession?
     var movieOutput: AVCaptureMovieFileOutput?
     var outputUrl: URL?
@@ -22,12 +22,12 @@ class VideoRecorder: CDVPlugin {
     var cameraPosition: AVCaptureDevice.Position = .back
     var saveToGallery: Bool = false
 
-    // Watermark options
+    // Watermark
     var watermarkEnabled: Bool = false
     var watermarkImage: String?
     var watermarkPosition: String = "bottomright"
 
-    // Preview state 
+    // MARK: - Preview state (independent)
     private var previewSession: AVCaptureSession?
     private var previewVideoOutput: AVCaptureVideoDataOutput?
     private var previewQueue: DispatchQueue?
@@ -42,10 +42,9 @@ class VideoRecorder: CDVPlugin {
     private var previewCameraPosition: AVCaptureDevice.Position = .back
     private var previewJpegQuality: CGFloat = 0.85
 
-    // Safety cap for base64 frames (long side)
     private let previewMaxLongSide = 1280
 
-    // Cordova actions
+    // MARK: - Cordova actions
 
     @objc(start:)
     func start(command: CDVInvokedUrlCommand) {
@@ -60,8 +59,7 @@ class VideoRecorder: CDVPlugin {
         if let res = options["resolution"] as? String {
             let parts = res.lowercased().split(separator: "x")
             if parts.count == 2,
-               let w = Int(parts[0]),
-               let h = Int(parts[1]),
+               let w = Int(parts[0]), let h = Int(parts[1]),
                w > 0, h > 0 {
                 videoWidth = w
                 videoHeight = h
@@ -81,7 +79,7 @@ class VideoRecorder: CDVPlugin {
             watermarkImage = nil
         }
 
-        NSLog("[VideoRecorder] start called, maxLength=\(maxLengthSec), requested=\(videoWidth)x\(videoHeight), camera=\(cameraPosition == .front ? "front" : "back"), saveToGallery=\(saveToGallery), watermarkEnabled=\(watermarkEnabled)")
+        NSLog("[VideoRecorder] start called, maxLength=\(maxLengthSec), requested=\(videoWidth)x\(videoHeight), camera=\(cameraPosition == .front ? "front" : "back")")
 
         startBackgroundTask()
         setupSession()
@@ -94,49 +92,38 @@ class VideoRecorder: CDVPlugin {
     @objc(stop:)
     func stop(command: CDVInvokedUrlCommand) {
         self.callbackId = command.callbackId
-        NSLog("[VideoRecorder] stop called from JS")
         stopRecording()
     }
 
-    // Preview actions
+    // MARK: - Preview actions
 
     @objc(preview:)
     func preview(command: CDVInvokedUrlCommand) {
         let arg = command.arguments.first
 
-        if let _ = arg as? [String: Any] {
+        if arg is [String: Any] {
             previewStart(command: command)
             return
         }
 
         if let boolArg = arg as? Bool {
-            if boolArg {
-                previewStart(command: command)
-            } else {
-                previewStop(command: command)
-            }
+            boolArg ? previewStart(command: command) : previewStop(command: command)
             return
         }
 
         if let strArg = arg as? String {
             let lower = strArg.lowercased()
-            if lower == "start" {
-                previewStart(command: command)
-                return
-            } else if lower == "stop" {
-                previewStop(command: command)
-                return
-            }
+            if lower == "start" { previewStart(command: command); return }
+            if lower == "stop"  { previewStop(command: command); return }
         }
 
-        if let arr = arg as? [Any], !arr.isEmpty {
-            let first = arr[0]
-            if let boolFirst = first as? Bool {
-                if boolFirst { previewStart(command: command) } else { previewStop(command: command) }
+        if let arr = arg as? [Any], let first = arr.first {
+            if let b = first as? Bool {
+                b ? previewStart(command: command) : previewStop(command: command)
                 return
             }
-            if let strFirst = first as? String {
-                let lower = strFirst.lowercased()
+            if let s = first as? String {
+                let lower = s.lowercased()
                 if lower == "start" { previewStart(command: command); return }
                 if lower == "stop"  { previewStop(command: command); return }
             }
@@ -146,12 +133,7 @@ class VideoRecorder: CDVPlugin {
             }
         }
 
-        // Fallback toggle
-        if previewEnabled {
-            previewStop(command: command)
-        } else {
-            previewStart(command: command)
-        }
+        previewEnabled ? previewStop(command: command) : previewStart(command: command)
     }
 
     @objc(previewStart:)
@@ -161,37 +143,33 @@ class VideoRecorder: CDVPlugin {
         if let fps = options["fps"] as? Int, fps > 0 {
             previewTargetFps = fps
         }
-
-        if let quality = options["quality"] as? Int{
-            previewJpegQuality = CGFloat(quality) / 100
+        if let quality = options["quality"] as? Int {
+            previewJpegQuality = CGFloat(quality) / 100.0
         }
-
         if let cam = options["camera"] as? String {
             previewCameraPosition = cam.lowercased() == "front" ? .front : .back
         }
-
         if let res = options["resolution"] as? String {
             let parts = res.lowercased().split(separator: "x")
             if parts.count == 2,
-               let w = Int(parts[0]),
-               let h = Int(parts[1]),
+               let w = Int(parts[0]), let h = Int(parts[1]),
                w > 0, h > 0 {
                 previewWidth = w
                 previewHeight = h
             }
         }
 
-        self.previewCallbackId = command.callbackId
+        previewCallbackId = command.callbackId
 
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
 
-            NSLog("[VideoRecorder] previewStart camera=\(self.previewCameraPosition == .front ? "front" : "back") requested=\(self.previewWidth)x\(self.previewHeight) fps=\(self.previewTargetFps)")
-
             if self.previewEnabled {
                 let result = CDVPluginResult(status: .ok, messageAs: "preview_already_started")
-                result?.setKeepCallbackAs(true)
-                self.commandDelegate.send(result, callbackId: self.previewCallbackId)
+                result.setKeepCallbackAs(true)
+                if let cb = self.previewCallbackId {
+                    self.commandDelegate.send(result, callbackId: cb)
+                }
                 return
             }
 
@@ -199,8 +177,10 @@ class VideoRecorder: CDVPlugin {
             self.lastPreviewSentAt = 0
 
             let startResult = CDVPluginResult(status: .ok, messageAs: "preview_started")
-            startResult?.setKeepCallbackAs(true)
-            self.commandDelegate.send(startResult, callbackId: self.previewCallbackId)
+            startResult.setKeepCallbackAs(true)
+            if let cb = self.previewCallbackId {
+                self.commandDelegate.send(startResult, callbackId: cb)
+            }
 
             self.setupPreviewSession()
         }
@@ -211,18 +191,17 @@ class VideoRecorder: CDVPlugin {
         stopPreviewSession()
 
         let stopResult = CDVPluginResult(status: .ok, messageAs: "preview_stopped")
-        stopResult?.setKeepCallbackAs(false)
+        stopResult.setKeepCallbackAs(false)
 
         if let cb = command.callbackId {
             commandDelegate.send(stopResult, callbackId: cb)
         } else if let cb = previewCallbackId {
             commandDelegate.send(stopResult, callbackId: cb)
         }
-
         previewCallbackId = nil
     }
 
-    // Recording session
+    // MARK: - Recording
 
     private func setupSession() {
         let session = AVCaptureSession()
@@ -247,7 +226,6 @@ class VideoRecorder: CDVPlugin {
         guard let vDevice = videoDevice,
               let videoInput = try? AVCaptureDeviceInput(device: vDevice),
               session.canAddInput(videoInput) else {
-            NSLog("[VideoRecorder] Failed to create video input")
             session.commitConfiguration()
             return
         }
@@ -269,22 +247,17 @@ class VideoRecorder: CDVPlugin {
     }
 
     private func startRecording() {
-        guard let movieOutput = self.movieOutput,
-              let session = self.captureSession else {
-            NSLog("[VideoRecorder] startRecording aborted: session or output nil")
-            return
-        }
+        guard let movieOutput = movieOutput,
+              let session = captureSession else { return }
 
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyyMMdd_HHmmss"
-        let filename = "VID_\(formatter.string(from: Date())).mov"
-        let fileUrl = docs.appendingPathComponent(filename)
-        self.outputUrl = fileUrl
+        let fileUrl = docs.appendingPathComponent("VID_\(formatter.string(from: Date())).mov")
+        outputUrl = fileUrl
 
-        let audioSession = AVAudioSession.sharedInstance()
-        try? audioSession.setCategory(.playAndRecord, mode: .videoRecording, options: [.mixWithOthers])
-        try? audioSession.setActive(true)
+        try? AVAudioSession.sharedInstance().setCategory(.playAndRecord, mode: .videoRecording, options: [.mixWithOthers])
+        try? AVAudioSession.sharedInstance().setActive(true)
 
         if let connection = movieOutput.connection(with: .video) {
             connection.videoOrientation = .portrait
@@ -297,10 +270,12 @@ class VideoRecorder: CDVPlugin {
             movieOutput.maxRecordedDuration = CMTime(seconds: Double(maxLengthSec), preferredTimescale: 600)
 
             stopTimer = Timer(timeInterval: Double(maxLengthSec) + 0.5, repeats: false) { [weak self] _ in
-                self?.stopRecording()
+                // FIXED
+                guard let self = self else { return }
+                self.stopRecording()
             }
-            if let stopTimer = stopTimer {
-                RunLoop.main.add(stopTimer, forMode: .common)
+            if let t = stopTimer {
+                RunLoop.main.add(t, forMode: .common)
             }
         }
 
@@ -309,16 +284,19 @@ class VideoRecorder: CDVPlugin {
     }
 
     private func stopRecording() {
-        stopTimer?.invalidate()
+        // FIXED
+        if let timer = stopTimer {
+            timer.invalidate()
+        }
         stopTimer = nil
 
-        guard let movieOutput = self.movieOutput else { return }
+        guard let movieOutput = movieOutput else { return }
         if movieOutput.isRecording {
             movieOutput.stopRecording()
         }
     }
 
-    // Preview session (independent)
+    // MARK: - Preview session
 
     private func setupPreviewSession() {
         stopPreviewSession()
@@ -326,7 +304,6 @@ class VideoRecorder: CDVPlugin {
         let session = AVCaptureSession()
         session.beginConfiguration()
 
-        // Cap long side for base64 safety
         let requestedLong = max(previewWidth, previewHeight)
         let targetLong = min(requestedLong, previewMaxLongSide)
 
@@ -343,7 +320,6 @@ class VideoRecorder: CDVPlugin {
         guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: previewCameraPosition),
               let input = try? AVCaptureDeviceInput(device: device),
               session.canAddInput(input) else {
-            NSLog("[VideoRecorder] setupPreviewSession: failed to create video input")
             session.commitConfiguration()
             return
         }
@@ -363,22 +339,17 @@ class VideoRecorder: CDVPlugin {
             if connection.isVideoOrientationSupported {
                 connection.videoOrientation = .portrait
             }
-            if previewCameraPosition == .front && connection.isVideoMirroringSupported {
-                connection.isVideoMirrored = true
-            } else {
-                connection.isVideoMirrored = false
-            }
+            connection.isVideoMirrored = (previewCameraPosition == .front && connection.isVideoMirroringSupported)
         }
 
         session.commitConfiguration()
 
-        self.previewSession = session
-        self.previewVideoOutput = videoOutput
-        self.previewQueue = queue
+        previewSession = session
+        previewVideoOutput = videoOutput
+        previewQueue = queue
 
         DispatchQueue.global(qos: .userInitiated).async {
             session.startRunning()
-            NSLog("[VideoRecorder] preview session started (preset=\(session.sessionPreset.rawValue))")
         }
     }
 
@@ -391,14 +362,17 @@ class VideoRecorder: CDVPlugin {
             }
         }
 
-        previewVideoOutput?.setSampleBufferDelegate(nil, queue: nil)
+        // FIXED
+        if let output = previewVideoOutput {
+            output.setSampleBufferDelegate(nil, queue: nil)
+        }
         previewVideoOutput = nil
         previewQueue = nil
         previewSession = nil
         lastPreviewSentAt = 0
     }
 
-    // JPEG conversion
+    // MARK: - JPEG
 
     private func jpegDataFromSampleBuffer(_ sampleBuffer: CMSampleBuffer, quality: CGFloat = 0.85) -> Data? {
         guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return nil }
@@ -407,17 +381,21 @@ class VideoRecorder: CDVPlugin {
         if ciContext == nil {
             ciContext = CIContext(options: [.useSoftwareRenderer: false])
         }
-        guard let cgImage = ciContext?.createCGImage(ciImage, from: ciImage.extent) else { return nil }
+        guard let context = ciContext,
+              let cgImage = context.createCGImage(ciImage, from: ciImage.extent) else {
+            return nil
+        }
 
-        let uiImage = UIImage(cgImage: cgImage)
-        return uiImage.jpegData(compressionQuality: quality)
+        return UIImage(cgImage: cgImage).jpegData(compressionQuality: quality)
     }
 
-    // Background task helpers
+    // MARK: - Background task
 
     private func startBackgroundTask() {
         backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "VideoRecorder") { [weak self] in
-            self?.endBackgroundTask()
+            // FIXED
+            guard let self = self else { return }
+            self.endBackgroundTask()
         }
     }
 
@@ -439,7 +417,7 @@ class VideoRecorder: CDVPlugin {
         }
     }
 
-    // Watermark helpers
+    // MARK: - Watermark
 
     private func loadWatermarkImage() -> UIImage? {
         guard let name = watermarkImage, !name.isEmpty else { return nil }
@@ -456,30 +434,25 @@ class VideoRecorder: CDVPlugin {
                                        inDirectory: dir.isEmpty ? "www" : "www/\(dir)") {
             return UIImage(contentsOfFile: path)
         }
-
         if let path = Bundle.main.path(forResource: name, ofType: nil, inDirectory: "www") {
             return UIImage(contentsOfFile: path)
         }
-
         return nil
     }
 
     private func watermarkFrame(videoSize: CGSize, wmSize: CGSize, position: String) -> CGRect {
         let padding: CGFloat = 10
-        let w = wmSize.width
-        let h = wmSize.height
-
         switch position.lowercased() {
         case "topleft":
-            return CGRect(x: padding, y: padding, width: w, height: h)
+            return CGRect(x: padding, y: padding, width: wmSize.width, height: wmSize.height)
         case "topright":
-            return CGRect(x: videoSize.width - w - padding, y: padding, width: w, height: h)
+            return CGRect(x: videoSize.width - wmSize.width - padding, y: padding, width: wmSize.width, height: wmSize.height)
         case "bottomleft":
-            return CGRect(x: padding, y: videoSize.height - h - padding, width: w, height: h)
+            return CGRect(x: padding, y: videoSize.height - wmSize.height - padding, width: wmSize.width, height: wmSize.height)
         default:
-            return CGRect(x: videoSize.width - w - padding,
-                          y: videoSize.height - h - padding,
-                          width: w, height: h)
+            return CGRect(x: videoSize.width - wmSize.width - padding,
+                          y: videoSize.height - wmSize.height - padding,
+                          width: wmSize.width, height: wmSize.height)
         }
     }
 
@@ -492,26 +465,15 @@ class VideoRecorder: CDVPlugin {
         let asset = AVAsset(url: inputURL)
         let mixComposition = AVMutableComposition()
 
-        guard
-            let videoTrack = asset.tracks(withMediaType: .video).first,
-            let compositionVideoTrack = mixComposition.addMutableTrack(
-                withMediaType: .video,
-                preferredTrackID: kCMPersistentTrackID_Invalid
-            )
-        else {
-            NSLog("[VideoRecorder] Failed to create composition video track")
+        guard let videoTrack = asset.tracks(withMediaType: .video).first,
+              let compositionVideoTrack = mixComposition.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid) else {
             completion(nil)
             return
         }
 
         do {
-            try compositionVideoTrack.insertTimeRange(
-                CMTimeRange(start: .zero, duration: asset.duration),
-                of: videoTrack,
-                at: .zero
-            )
+            try compositionVideoTrack.insertTimeRange(CMTimeRange(start: .zero, duration: asset.duration), of: videoTrack, at: .zero)
         } catch {
-            NSLog("[VideoRecorder] Failed to insert video track: \(error)")
             completion(nil)
             return
         }
@@ -519,15 +481,8 @@ class VideoRecorder: CDVPlugin {
         compositionVideoTrack.preferredTransform = videoTrack.preferredTransform
 
         if let audioTrack = asset.tracks(withMediaType: .audio).first,
-           let compositionAudioTrack = mixComposition.addMutableTrack(
-               withMediaType: .audio,
-               preferredTrackID: kCMPersistentTrackID_Invalid
-           ) {
-            try? compositionAudioTrack.insertTimeRange(
-                CMTimeRange(start: .zero, duration: asset.duration),
-                of: audioTrack,
-                at: .zero
-            )
+           let compositionAudioTrack = mixComposition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid) {
+            try? compositionAudioTrack.insertTimeRange(CMTimeRange(start: .zero, duration: asset.duration), of: audioTrack, at: .zero)
         }
 
         let videoComposition = AVMutableVideoComposition()
@@ -535,25 +490,20 @@ class VideoRecorder: CDVPlugin {
 
         let naturalSize = videoTrack.naturalSize
         let transform = videoTrack.preferredTransform
-
         let displayWidth = abs(naturalSize.width * transform.a) + abs(naturalSize.height * transform.c)
         let displayHeight = abs(naturalSize.width * transform.b) + abs(naturalSize.height * transform.d)
         let finalSize = CGSize(width: displayWidth, height: displayHeight)
-
         videoComposition.renderSize = finalSize
 
         let instruction = AVMutableVideoCompositionInstruction()
         instruction.timeRange = CMTimeRange(start: .zero, duration: asset.duration)
-
         let layerInstruction = AVMutableVideoCompositionLayerInstruction(assetTrack: compositionVideoTrack)
         layerInstruction.setTransform(transform, at: .zero)
-
         instruction.layerInstructions = [layerInstruction]
         videoComposition.instructions = [instruction]
 
         let parentLayer = CALayer()
         parentLayer.frame = CGRect(origin: .zero, size: finalSize)
-
         let videoLayer = CALayer()
         videoLayer.frame = parentLayer.frame
         parentLayer.addSublayer(videoLayer)
@@ -564,47 +514,30 @@ class VideoRecorder: CDVPlugin {
 
         let targetWidth = finalSize.width * 0.20
         let aspectRatio = wmImage.size.height / wmImage.size.width
-        let targetHeight = targetWidth * aspectRatio
-        let wmSize = CGSize(width: targetWidth, height: targetHeight)
+        let wmSize = CGSize(width: targetWidth, height: targetWidth * aspectRatio)
 
         var wmFrame = watermarkFrame(videoSize: finalSize, wmSize: wmSize, position: watermarkPosition)
-
-        let isPortrait = finalSize.height > finalSize.width
-        if isPortrait {
+        if finalSize.height > finalSize.width {
             wmFrame.origin.y = finalSize.height - wmFrame.maxY
         }
-
         wmLayer.frame = wmFrame
-        wmLayer.opacity = 1.0
         parentLayer.addSublayer(wmLayer)
 
-        videoComposition.animationTool = AVVideoCompositionCoreAnimationTool(
-            postProcessingAsVideoLayer: videoLayer,
-            in: parentLayer
-        )
+        videoComposition.animationTool = AVVideoCompositionCoreAnimationTool(postProcessingAsVideoLayer: videoLayer, in: parentLayer)
 
-        let tempDir = FileManager.default.temporaryDirectory
-        let outName = "VID_WM_\(Int(Date().timeIntervalSince1970)).mov"
-        let outURL = tempDir.appendingPathComponent(outName)
+        let outURL = FileManager.default.temporaryDirectory.appendingPathComponent("VID_WM_\(Int(Date().timeIntervalSince1970)).mov")
 
-        guard let exporter = AVAssetExportSession(asset: mixComposition,
-                                                  presetName: AVAssetExportPresetHighestQuality) else {
+        guard let exporter = AVAssetExportSession(asset: mixComposition, presetName: AVAssetExportPresetHighestQuality) else {
             completion(nil)
             return
         }
-
         exporter.outputURL = outURL
         exporter.outputFileType = .mov
         exporter.shouldOptimizeForNetworkUse = true
         exporter.videoComposition = videoComposition
 
         exporter.exportAsynchronously {
-            switch exporter.status {
-            case .completed:
-                completion(outURL)
-            default:
-                completion(nil)
-            }
+            completion(exporter.status == .completed ? outURL : nil)
         }
     }
 
@@ -612,13 +545,14 @@ class VideoRecorder: CDVPlugin {
         var savedLocalId: String?
 
         PHPhotoLibrary.shared().performChanges({
-            let request = PHAssetChangeRequest.creationRequestForAssetFromVideo(atFileURL: url)
-            savedLocalId = request?.placeholderForCreatedAsset?.localIdentifier
+            if let request = PHAssetChangeRequest.creationRequestForAssetFromVideo(atFileURL: url),
+            let placeholder = request.placeholderForCreatedAsset {
+                savedLocalId = placeholder.localIdentifier
+            }
         }) { success, error in
             if let error = error {
                 NSLog("[VideoRecorder] Error saving to Photos: \(error)")
             }
-
             try? FileManager.default.removeItem(at: url)
 
             guard success, let localId = savedLocalId else { return }
@@ -649,14 +583,9 @@ class VideoRecorder: CDVPlugin {
                 return
             }
 
-            let tempDir = FileManager.default.temporaryDirectory
-            let exportFilename = "VID_EXPORT_\(Int(Date().timeIntervalSince1970)).mov"
-            let exportUrl = tempDir.appendingPathComponent(exportFilename)
+            let exportUrl = FileManager.default.temporaryDirectory.appendingPathComponent("VID_EXPORT_\(Int(Date().timeIntervalSince1970)).mov")
 
-            guard let exportSession = AVAssetExportSession(asset: avAsset, presetName: AVAssetExportPresetHighestQuality) else {
-                return
-            }
-
+            guard let exportSession = AVAssetExportSession(asset: avAsset, presetName: AVAssetExportPresetHighestQuality) else { return }
             exportSession.outputURL = exportUrl
             exportSession.outputFileType = .mov
             exportSession.shouldOptimizeForNetworkUse = true
@@ -670,10 +599,9 @@ class VideoRecorder: CDVPlugin {
     }
 }
 
-// AVCaptureFileOutputRecordingDelegate
+// MARK: - Recording delegate
 
 extension VideoRecorder: AVCaptureFileOutputRecordingDelegate {
-
     func fileOutput(_ output: AVCaptureFileOutput,
                     didFinishRecordingTo outputFileURL: URL,
                     from connections: [AVCaptureConnection],
@@ -701,43 +629,39 @@ extension VideoRecorder: AVCaptureFileOutputRecordingDelegate {
     }
 }
 
-// AVCaptureVideoDataOutputSampleBufferDelegate (preview)
+// MARK: - Preview delegate
 
 extension VideoRecorder: AVCaptureVideoDataOutputSampleBufferDelegate {
-
     func captureOutput(_ output: AVCaptureOutput,
                        didOutput sampleBuffer: CMSampleBuffer,
                        from connection: AVCaptureConnection) {
 
         let now = Date().timeIntervalSince1970
-        let minInterval = previewTargetFps > 0 ? (1.0 / Double(previewTargetFps)) : 0.0
-        if minInterval > 0 && now - lastPreviewSentAt < minInterval {
-            return
-        }
+        let minInterval = previewTargetFps > 0 ? 1.0 / Double(previewTargetFps) : 0.0
+        if minInterval > 0 && now - lastPreviewSentAt < minInterval { return }
         lastPreviewSentAt = now
 
         guard let cbId = previewCallbackId else {
             if previewEnabled {
                 DispatchQueue.main.async { [weak self] in
-                    self?.previewEnabled = false
-                    self?.stopPreviewSession()
+                    // FIXED
+                    guard let self = self else { return }
+                    self.previewEnabled = false
+                    self.stopPreviewSession()
                 }
             }
             return
         }
 
-        guard let jpeg = jpegDataFromSampleBuffer(sampleBuffer, quality: previewJpegQuality) else {
-            return
-        }
+        guard let jpeg = jpegDataFromSampleBuffer(sampleBuffer, quality: previewJpegQuality) else { return }
 
-        let b64 = jpeg.base64EncodedString(options: [])
-        let dataUri = "data:image/jpeg;base64,\(b64)"
+        let dataUri = "data:image/jpeg;base64," + jpeg.base64EncodedString()
 
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
-            let pluginResult = CDVPluginResult(status: .ok, messageAs: dataUri)
-            pluginResult?.setKeepCallbackAs(true)
-            self.commandDelegate.send(pluginResult, callbackId: cbId)
+            let result = CDVPluginResult(status: .ok, messageAs: dataUri)
+            result.setKeepCallbackAs(true)
+            self.commandDelegate.send(result, callbackId: cbId)
         }
     }
 }
