@@ -85,31 +85,27 @@ class RecordingService : Service() {
         super.onCreate()
         cameraManager = getSystemService(Context.CAMERA_SERVICE) as CameraManager
         createNotificationChannel()
-        val notification = buildNotification()
-
-        val hasCameraPermission = androidx.core.content.ContextCompat.checkSelfPermission(
-            this, android.Manifest.permission.CAMERA
-        ) == android.content.pm.PackageManager.PERMISSION_GRANTED
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE && hasCameraPermission) {
-            try {
-                startForeground(1, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA)
-            } catch (se: SecurityException) {
-                Log.w(TAG, "startForeground with camera type denied, falling back: ${se.message}")
-                startForeground(1, notification)
-            }
-        } else {
-            startForeground(1, notification)
-        }
-
-        Log.d(TAG, "onCreate: pid=${android.os.Process.myPid()}")
+        // Do NOT call startForeground here anymore
+        Log.d(TAG, "onCreate: pid=${android.os.Process.myPid()} (not yet foreground)")
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         try {
             if (intent == null) {
                 Log.w(TAG, "onStartCommand: null intent")
-                return START_STICKY
+                return START_NOT_STICKY
+            }
+
+            // Promote to foreground only when we receive a real command
+            // and only if we have the camera permission
+            when (intent.action) {
+                "START_RECORDING", "START_PREVIEW" -> {
+                    if (!ensureForeground()) {
+                        // Permission missing or failed ? stop immediately
+                        stopSelf()
+                        return START_NOT_STICKY
+                    }
+                }
             }
 
             when (intent.action) {
@@ -192,6 +188,36 @@ class RecordingService : Service() {
                 stopRecording()
             } catch (_: Exception) {}
             return START_NOT_STICKY
+        }
+    }
+
+    private fun ensureForeground(): Boolean {
+        val hasCameraPermission = androidx.core.content.ContextCompat.checkSelfPermission(
+            this, android.Manifest.permission.CAMERA
+        ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+
+        if (!hasCameraPermission) {
+            Log.w(TAG, "CAMERA permission not granted – cannot start camera foreground service")
+            return false
+        }
+
+        val notification = buildNotification()
+
+        return try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(
+                    1,
+                    notification,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA
+                )
+            } else {
+                startForeground(1, notification)
+            }
+            Log.d(TAG, "Service is now in foreground (camera type)")
+            true
+        } catch (se: SecurityException) {
+            Log.e(TAG, "startForeground failed: ${se.message}")
+            false
         }
     }
 
@@ -424,7 +450,7 @@ class RecordingService : Service() {
                         }
 
                         override fun onConfigureFailed(session: CameraCaptureSession) {
-                            Log.w(TAG, "onConfigureFailed – retrying without preview")
+                            Log.w(TAG, "onConfigureFailed ? retrying without preview")
                             if (previewEnabled && targetSurfaces.size > 1) {
                                 try {
                                     captureSession?.close()
@@ -492,7 +518,7 @@ class RecordingService : Service() {
 
             val previewSurface = previewReader!!.surface
 
-            // Case 1 – camera already open (recording is active)
+            // Case 1 ? camera already open (recording is active)
             if (cameraDevice != null) {
                 try { captureSession?.close() } catch (_: Exception) {}
                 captureSession = null
@@ -528,7 +554,7 @@ class RecordingService : Service() {
                 return
             }
 
-            // Case 2 – preview only
+            // Case 2 ? preview only
             cameraManager.openCamera(cameraId, object : CameraDevice.StateCallback() {
                 override fun onOpened(device: CameraDevice) {
                     cameraDevice = device
@@ -627,7 +653,7 @@ class RecordingService : Service() {
         return out.toByteArray()
     }
 
-    // Simplified – only rotates when needed, no second quality loss when rotation == 0
+    // Simplified ? only rotates when needed, no second quality loss when rotation == 0
     private fun applySensorOrientation(jpegBytes: ByteArray): ByteArray {
         return try {
             val cameraId = findCameraIdForFacing(previewCameraFacing) ?: return jpegBytes
