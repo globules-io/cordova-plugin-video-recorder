@@ -1,6 +1,6 @@
 # cordova-plugin-video-recorder
-Cordova plugin for Android and iOS to natively record a video and display live preview as base64
-Recording and Preview are independent and can operate on different resolutions
+> Cordova plugin for Android and iOS to natively record a video and display live preview as base64
+> Recording and Preview are independent and can operate on different resolutions
 
 ## Installation
 ```bash
@@ -8,8 +8,12 @@ cordova plugin add @globules-io/cordova-plugin-video-recorder
 cordova plugin rm @globules-io/cordova-plugin-video-recorder
 ```
 ## Supported Platforms
-Android
-iOS
+> Android
+> iOS
+
+## Permissions
+> On Android, some permissions are required to start the preview and recording services (CAMERA, MICROPHONE and POST_NOTIFICATIONS)
+> Use the plugin / mechanism of your choice to request these permissions before starting the services
 
 ## JS API
 Start Recording
