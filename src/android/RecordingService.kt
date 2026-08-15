@@ -197,7 +197,7 @@ class RecordingService : Service() {
         ) == android.content.pm.PackageManager.PERMISSION_GRANTED
 
         if (!hasCameraPermission) {
-            Log.w(TAG, "CAMERA permission not granted – cannot start camera foreground service")
+            Log.w(TAG, "CAMERA permission not granted ï¿½ cannot start camera foreground service")
             return false
         }
 
@@ -824,75 +824,87 @@ class RecordingService : Service() {
     // ----------------------------------------------------------------------
     // Stop recording + watermark + gallery
     // ----------------------------------------------------------------------
+     private fun stopRecording() {
+          if (!isRecording) {
+               stopWithCallback?.invoke(null)
+               stopWithCallback = null
+               cleanupPreview()
+               removeNotificationAndStop()
+               return
+          }
 
-    private fun stopRecording() {
-        if (!isRecording) {
-            stopWithCallback?.invoke(null)
-            stopWithCallback = null
-            cleanupPreview()
-            stopForeground(true)
-            stopSelf()
-            return
-        }
+          isRecording = false
 
-        isRecording = false
+          // Stop camera & recorder
+          try {
+               mediaRecorder?.apply {
+                    try { stop() } catch (_: Exception) {}
+                    reset()
+                    release()
+               }
+          } catch (_: Exception) {}
+          mediaRecorder = null
 
-        try {
-            mediaRecorder?.apply {
-                try { stop() } catch (_: Exception) {}
-                reset()
-                release()
-            }
-        } catch (_: Exception) {}
-        mediaRecorder = null
+          try { captureSession?.close() } catch (_: Exception) {}
+          captureSession = null
+          try { cameraDevice?.close() } catch (_: Exception) {}
+          cameraDevice = null
 
-        try { captureSession?.close() } catch (_: Exception) {}
-        captureSession = null
-        try { cameraDevice?.close() } catch (_: Exception) {}
-        cameraDevice = null
+          cleanupPreview()
 
-        cleanupPreview()
+          val originalPath = outputFile
+          outputFile = null
 
-        val originalPath = outputFile
-        outputFile = null
+          // Remove the notification
+          removeNotificationAndStop()
 
-        if (originalPath == null) {
-            stopWithCallback?.invoke(null)
-            stopWithCallback = null
-            stopForeground(true)
-            stopSelf()
-            return
-        }
+          if (originalPath == null) {
+               stopWithCallback?.invoke(null)
+               stopWithCallback = null
+               return
+          }
 
-        val originalFile = File(originalPath)
+          val originalFile = File(originalPath)
 
-        if (watermarkEnabled && watermarkImage != null) {
-            val wmFile = resolveWatermarkAsset(watermarkImage!!)
-            if (wmFile != null) {
-                exportWithWatermark(originalFile, wmFile, watermarkPosition) { watermarked ->
-                    val finalFile = watermarked ?: originalFile
-                    if (saveToGallery) {
-                        stopWithCallback?.invoke(moveToGallery(finalFile.absolutePath))
-                    } else {
-                        stopWithCallback?.invoke("file://${finalFile.absolutePath}")
+          if (watermarkEnabled && watermarkImage != null) {
+               val wmFile = resolveWatermarkAsset(watermarkImage!!)
+               if (wmFile != null) {
+                    exportWithWatermark(originalFile, wmFile, watermarkPosition) { watermarked ->
+                         val finalFile = watermarked ?: originalFile
+                         if (saveToGallery) {
+                              stopWithCallback?.invoke(moveToGallery(finalFile.absolutePath))
+                         } else {
+                              stopWithCallback?.invoke("file://${finalFile.absolutePath}")
+                         }
+                         stopWithCallback = null
+                         // no need to call stopForeground/stopSelf again
                     }
-                    stopWithCallback = null
-                    stopForeground(true)
-                    stopSelf()
-                }
-                return
-            }
-        }
+                    return
+               }
+          }
 
-        if (saveToGallery) {
-            stopWithCallback?.invoke(moveToGallery(originalPath))
-        } else {
-            stopWithCallback?.invoke("file://$originalPath")
-        }
-        stopWithCallback = null
-        stopForeground(true)
-        stopSelf()
-    }
+          // No watermark
+          if (saveToGallery) {
+               stopWithCallback?.invoke(moveToGallery(originalPath))
+          } else {
+               stopWithCallback?.invoke("file://$originalPath")
+          }
+          stopWithCallback = null
+     }
+
+     private fun removeNotificationAndStop() {
+          try {
+               if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                    stopForeground(Service.STOP_FOREGROUND_REMOVE)
+               } else {
+                    @Suppress("DEPRECATION")
+                    stopForeground(true)
+               }
+          } catch (e: Exception) {
+               Log.w(TAG, "stopForeground failed: ${e.message}")
+          }
+          stopSelf()
+     }
 
     // ----------------------------------------------------------------------
     // Watermark / gallery helpers
@@ -949,20 +961,35 @@ class RecordingService : Service() {
     }
 
     private fun buildNotification(): Notification {
-        return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("Recording video")
-            .setContentText("Video recording in progress")
-            .setSmallIcon(android.R.drawable.presence_video_online)
-            .setOngoing(true)
-            .build()
-    }
+          return NotificationCompat.Builder(this, CHANNEL_ID)
+          .setContentTitle("Recording video")
+          .setContentText("Video recording in progress")
+          .setSmallIcon(android.R.drawable.ic_menu_camera)
+          .setOngoing(true)
+          .setSilent(true)
+          .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+          .setCategory(NotificationCompat.CATEGORY_SERVICE)
+          .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+          .build()
+     }
 
-    private fun createNotificationChannel() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val chan = NotificationChannel(CHANNEL_ID, "Video Recorder", NotificationManager.IMPORTANCE_LOW)
-            getSystemService(NotificationManager::class.java).createNotificationChannel(chan)
-        }
-    }
+     private fun createNotificationChannel() {
+          if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+               val chan = NotificationChannel(
+                    CHANNEL_ID,
+                    "Video Recorder",
+                    NotificationManager.IMPORTANCE_DEFAULT
+               ).apply {
+                    description = "Notification shown while video is being recorded"
+                    setShowBadge(false)                   
+                    setSound(null, null)         
+                    enableVibration(false)
+                    lockscreenVisibility = Notification.VISIBILITY_PUBLIC
+               }
+               getSystemService(NotificationManager::class.java)
+                    .createNotificationChannel(chan)
+          }
+     }
 
     override fun onBind(intent: Intent?): IBinder? = null
 }
