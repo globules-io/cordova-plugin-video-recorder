@@ -99,8 +99,15 @@ class RecordingService : Service() {
             // Promote to foreground only when we receive a real command
             // and only if we have the camera permission
             when (intent.action) {
-                "START_RECORDING", "START_PREVIEW" -> {
-                    if (!ensureForeground()) {
+                "START_RECORDING" -> {
+                    if (!ensureForeground(true)) {
+                        // Permission missing or failed ? stop immediately
+                        stopSelf()
+                        return START_NOT_STICKY
+                    }
+                }
+                "START_PREVIEW" -> {
+                    if (!ensureForeground(false)) {
                         // Permission missing or failed ? stop immediately
                         stopSelf()
                         return START_NOT_STICKY
@@ -170,7 +177,12 @@ class RecordingService : Service() {
                 }
 
                 "STOP_PREVIEW" -> {
-                    try { stopPreviewMode() } catch (e: Exception) {
+                    try { 
+                         stopPreviewMode() 
+                         if (!isRecording) {
+                              stopForeground(true)
+                         }
+                    } catch (e: Exception) {
                         Log.w(TAG, "STOP_PREVIEW failed: ${e.message}")
                     }
                     return START_NOT_STICKY
@@ -191,7 +203,7 @@ class RecordingService : Service() {
         }
     }
 
-    private fun ensureForeground(): Boolean {
+     private fun ensureForeground(isRecording: Boolean): Boolean {
         val hasCameraPermission = androidx.core.content.ContextCompat.checkSelfPermission(
             this, android.Manifest.permission.CAMERA
         ) == android.content.pm.PackageManager.PERMISSION_GRANTED
@@ -201,7 +213,10 @@ class RecordingService : Service() {
             return false
         }
 
-        val notification = buildNotification()
+       val notification = if (isRecording)
+          buildRecordingNotification()
+          else
+          buildPreviewNotification()
 
         return try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -959,18 +974,31 @@ class RecordingService : Service() {
             } else null
         } catch (e: Exception) { null }
     }
-
-    private fun buildNotification(): Notification {
+    
+     private fun buildRecordingNotification(): Notification {
           return NotificationCompat.Builder(this, CHANNEL_ID)
-          .setContentTitle("Recording video")
-          .setContentText("Video recording in progress")
-          .setSmallIcon(android.R.drawable.ic_menu_camera)
-          .setOngoing(true)
-          .setSilent(true)
-          .setPriority(NotificationCompat.PRIORITY_DEFAULT)
-          .setCategory(NotificationCompat.CATEGORY_SERVICE)
-          .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
-          .build()
+               .setContentTitle("Recording video")
+               .setContentText("Video recording in progress")
+               .setSmallIcon(android.R.drawable.ic_menu_camera)
+               .setOngoing(true)
+               .setSilent(true)
+               .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+               .setCategory(NotificationCompat.CATEGORY_SERVICE)
+               .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+               .build()
+     }
+
+     private fun buildPreviewNotification(): Notification {
+          return NotificationCompat.Builder(this, CHANNEL_ID)
+               .setContentTitle("Camera preview")
+               .setContentText("Live preview active")
+               .setSmallIcon(android.R.drawable.ic_menu_camera)
+               .setOngoing(true)
+               .setSilent(true)
+               .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+               .setCategory(NotificationCompat.CATEGORY_SERVICE)
+               .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+               .build()       
      }
 
      private fun createNotificationChannel() {
