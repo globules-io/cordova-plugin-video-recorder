@@ -295,14 +295,10 @@ class VideoRecorder : CordovaPlugin() {
                 action = "STOP_PREVIEW"
             }
             act.runOnUiThread {
-                try {
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                        act.startForegroundService(stopIntent)
-                    } else {
-                        act.startService(stopIntent)
-                    }
-                } catch (_: Exception) {}
-            }
+            try {               
+                act.startService(stopIntent)
+            } catch (_: Exception) {}
+        }
         } catch (_: Exception) {}
     }
 
