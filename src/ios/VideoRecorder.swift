@@ -7,7 +7,7 @@ import UIKit
 @objc(VideoRecorder)
 class VideoRecorder: CDVPlugin {
 
-    // MARK: - Recording state
+    //  Recording state
     var captureSession: AVCaptureSession?
     var movieOutput: AVCaptureMovieFileOutput?
     var outputUrl: URL?
@@ -27,7 +27,7 @@ class VideoRecorder: CDVPlugin {
     var watermarkImage: String?
     var watermarkPosition: String = "bottomright"
 
-    // MARK: - Preview state (independent)
+    //  Preview state (independent)
     private var previewSession: AVCaptureSession?
     private var previewVideoOutput: AVCaptureVideoDataOutput?
     private var previewQueue: DispatchQueue?
@@ -44,7 +44,7 @@ class VideoRecorder: CDVPlugin {
 
     private let previewMaxLongSide = 1280
 
-    // MARK: - Cordova actions
+    //  Cordova actions
 
     @objc(start:)
     func start(command: CDVInvokedUrlCommand) {
@@ -95,7 +95,7 @@ class VideoRecorder: CDVPlugin {
         stopRecording()
     }
 
-    // MARK: - Preview actions
+    //  Preview actions
 
     @objc(preview:)
     func preview(command: CDVInvokedUrlCommand) {
@@ -201,7 +201,7 @@ class VideoRecorder: CDVPlugin {
         previewCallbackId = nil
     }
 
-    // MARK: - Recording
+    //  Recording
 
     private func setupSession() {
         let session = AVCaptureSession()
@@ -270,7 +270,6 @@ class VideoRecorder: CDVPlugin {
             movieOutput.maxRecordedDuration = CMTime(seconds: Double(maxLengthSec), preferredTimescale: 600)
 
             stopTimer = Timer(timeInterval: Double(maxLengthSec) + 0.5, repeats: false) { [weak self] _ in
-                // FIXED
                 guard let self = self else { return }
                 self.stopRecording()
             }
@@ -284,7 +283,6 @@ class VideoRecorder: CDVPlugin {
     }
 
     private func stopRecording() {
-        // FIXED
         if let timer = stopTimer {
             timer.invalidate()
         }
@@ -296,7 +294,7 @@ class VideoRecorder: CDVPlugin {
         }
     }
 
-    // MARK: - Preview session
+    //  Preview session
 
     private func setupPreviewSession() {
         stopPreviewSession()
@@ -362,7 +360,6 @@ class VideoRecorder: CDVPlugin {
             }
         }
 
-        // FIXED
         if let output = previewVideoOutput {
             output.setSampleBufferDelegate(nil, queue: nil)
         }
@@ -372,7 +369,7 @@ class VideoRecorder: CDVPlugin {
         lastPreviewSentAt = 0
     }
 
-    // MARK: - JPEG
+    //  JPEG
 
     private func jpegDataFromSampleBuffer(_ sampleBuffer: CMSampleBuffer, quality: CGFloat = 0.85) -> Data? {
         guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return nil }
@@ -389,7 +386,7 @@ class VideoRecorder: CDVPlugin {
         return UIImage(cgImage: cgImage).jpegData(compressionQuality: quality)
     }
 
-    // MARK: - Background task
+    //  Background task
 
     private func startBackgroundTask() {
         backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "VideoRecorder") { [weak self] in
@@ -417,7 +414,7 @@ class VideoRecorder: CDVPlugin {
         }
     }
 
-    // MARK: - Watermark
+    //  Watermark
 
     private func loadWatermarkImage() -> UIImage? {
         guard let name = watermarkImage, !name.isEmpty else {
@@ -562,7 +559,7 @@ class VideoRecorder: CDVPlugin {
         let t = videoTrack.preferredTransform
 
         var renderSize = naturalSize
-        if t.a == 0 && t.d == 0 {          // 90° / 270°
+        if t.a == 0 && t.d == 0 {
             renderSize = CGSize(width: naturalSize.height, height: naturalSize.width)
         }
 
@@ -695,7 +692,7 @@ class VideoRecorder: CDVPlugin {
     }
 }
 
-// MARK: - Recording delegate
+//  Recording delegate
 
 extension VideoRecorder: AVCaptureFileOutputRecordingDelegate {
     func fileOutput(_ output: AVCaptureFileOutput,
@@ -725,7 +722,7 @@ extension VideoRecorder: AVCaptureFileOutputRecordingDelegate {
     }
 }
 
-// MARK: - Preview delegate
+//  Preview delegate
 
 extension VideoRecorder: AVCaptureVideoDataOutputSampleBufferDelegate {
     func captureOutput(_ output: AVCaptureOutput,
