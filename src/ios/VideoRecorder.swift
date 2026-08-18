@@ -321,7 +321,7 @@ class VideoRecorder: CDVPlugin {
             }
         }
 
-        // startRunning can block — already running on recordingQueue
+        // startRunning can block already running on recordingQueue
         session.startRunning()
         movieOutput.startRecording(to: fileUrl, recordingDelegate: self)
         NSLog("[VideoRecorder] Recording started (session.isRunning=\(session.isRunning))")
