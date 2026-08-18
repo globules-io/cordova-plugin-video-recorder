@@ -47,6 +47,9 @@ class VideoRecorder: CDVPlugin {
     // Frame counter for logging (reset on each start)
     private var previewFrameCount: Int = 0
 
+    // Dedicated queue for recording session work
+    private let recordingQueue = DispatchQueue(label: "VideoRecorder.RecordingQueue", qos: .userInitiated)
+
     //  Cordova actions
 
     @objc(start:)
@@ -85,8 +88,13 @@ class VideoRecorder: CDVPlugin {
         NSLog("[VideoRecorder] start called, maxLength=\(maxLengthSec), requested=\(videoWidth)x\(videoHeight), camera=\(cameraPosition == .front ? "front" : "back"), saveToGallery=\(saveToGallery), watermark=\(watermarkEnabled)")
 
         startBackgroundTask()
-        setupSession()
-        startRecording()
+
+        // Move session setup + startRecording onto a background queue
+        recordingQueue.async { [weak self] in
+            guard let self = self else { return }
+            self.setupSession()
+            self.startRecording()
+        }
 
         let result = CDVPluginResult(status: .ok)
         commandDelegate.send(result, callbackId: command.callbackId)
@@ -219,7 +227,7 @@ class VideoRecorder: CDVPlugin {
     //  Recording
 
     private func setupSession() {
-        NSLog("[VideoRecorder] setupSession for recording")
+        NSLog("[VideoRecorder] setupSession for recording (on background queue)")
         let session = AVCaptureSession()
         captureSession = session
         session.beginConfiguration()
@@ -283,8 +291,11 @@ class VideoRecorder: CDVPlugin {
 
         NSLog("[VideoRecorder] Starting recording to \(fileUrl.lastPathComponent)")
 
-        try? AVAudioSession.sharedInstance().setCategory(.playAndRecord, mode: .videoRecording, options: [.mixWithOthers])
-        try? AVAudioSession.sharedInstance().setActive(true)
+        // Audio session must be configured on the main thread
+        DispatchQueue.main.sync {
+            try? AVAudioSession.sharedInstance().setCategory(.playAndRecord, mode: .videoRecording, options: [.mixWithOthers])
+            try? AVAudioSession.sharedInstance().setActive(true)
+        }
 
         if let connection = movieOutput.connection(with: .video) {
             connection.videoOrientation = .portrait
@@ -296,19 +307,24 @@ class VideoRecorder: CDVPlugin {
         if maxLengthSec > 0 {
             movieOutput.maxRecordedDuration = CMTime(seconds: Double(maxLengthSec), preferredTimescale: 600)
 
-            stopTimer = Timer(timeInterval: Double(maxLengthSec) + 0.5, repeats: false) { [weak self] _ in
+            // Timer must be scheduled on the main run loop
+            DispatchQueue.main.async { [weak self] in
                 guard let self = self else { return }
-                NSLog("[VideoRecorder] maxLength timer fired stopping recording")
-                self.stopRecording()
-            }
-            if let t = stopTimer {
-                RunLoop.main.add(t, forMode: .common)
+                self.stopTimer = Timer(timeInterval: Double(self.maxLengthSec) + 0.5, repeats: false) { [weak self] _ in
+                    guard let self = self else { return }
+                    NSLog("[VideoRecorder] maxLength timer fired stopping recording")
+                    self.stopRecording()
+                }
+                if let t = self.stopTimer {
+                    RunLoop.main.add(t, forMode: .common)
+                }
             }
         }
 
+        // startRunning can block already running on recordingQueue
         session.startRunning()
         movieOutput.startRecording(to: fileUrl, recordingDelegate: self)
-        NSLog("[VideoRecorder] Recording started")
+        NSLog("[VideoRecorder] Recording started (session.isRunning=\(session.isRunning))")
     }
 
     private func stopRecording() {
@@ -318,15 +334,20 @@ class VideoRecorder: CDVPlugin {
         }
         stopTimer = nil
 
-        guard let movieOutput = movieOutput else {
-            NSLog("[VideoRecorder] stopRecording no movieOutput")
-            return
-        }
-        if movieOutput.isRecording {
-            movieOutput.stopRecording()
-            NSLog("[VideoRecorder] movieOutput.stopRecording() called")
-        } else {
-            NSLog("[VideoRecorder] movieOutput was not recording")
+        // Perform stop on the recording queue to keep it off the main thread
+        recordingQueue.async { [weak self] in
+            guard let self = self else { return }
+
+            guard let movieOutput = self.movieOutput else {
+                NSLog("[VideoRecorder] stopRecording no movieOutput")
+                return
+            }
+            if movieOutput.isRecording {
+                movieOutput.stopRecording()
+                NSLog("[VideoRecorder] movieOutput.stopRecording() called")
+            } else {
+                NSLog("[VideoRecorder] movieOutput was not recording")
+            }
         }
     }
 
@@ -809,11 +830,15 @@ extension VideoRecorder: AVCaptureFileOutputRecordingDelegate {
 
         NSLog("[VideoRecorder] didFinishRecording  error=\(String(describing: error)), file=\(outputFileURL.lastPathComponent)")
 
-        if let session = captureSession, session.isRunning {
-            session.stopRunning()
+        // Stop the session on the recording queue
+        recordingQueue.async { [weak self] in
+            guard let self = self else { return }
+            if let session = self.captureSession, session.isRunning {
+                session.stopRunning()
+            }
+            self.captureSession = nil
+            self.movieOutput = nil
         }
-        captureSession = nil
-        movieOutput = nil
 
         try? AVAudioSession.sharedInstance().setActive(false)
         endBackgroundTask()

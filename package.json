@@ -1,6 +1,6 @@
 {
      "name": "@globules-io/cordova-plugin-video-recorder",
-     "version": "1.4.3",
+     "version": "1.4.4",
      "description": "Capture video natively",
      "cordova": {
           "id": "@globules-io/cordova-plugin-video-recorder",
