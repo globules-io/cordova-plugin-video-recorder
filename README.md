@@ -9,10 +9,16 @@ cordova plugin rm @globules-io/cordova-plugin-video-recorder
 ```
 ## Supported Platforms
 > Android
+>
 > iOS
 
 ## Permissions
-> On Android, some permissions are required to start the preview and recording services (CAMERA, MICROPHONE and POST_NOTIFICATIONS)
+> Permissions are required for this plugin to function properly (CAMERA, MICROPHONE)
+>
+> On Android, the POST_NOTIFICATIONS permission is required to show a local notification
+>
+> On iOS, NSPhotoLibraryUsageDescription is required to read/write from the photo library
+>
 > Use the plugin / mechanism of your choice to request these permissions before starting the services
 
 ## JS API
