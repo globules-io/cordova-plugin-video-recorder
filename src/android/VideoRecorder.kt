@@ -302,6 +302,20 @@ class VideoRecorder : CordovaPlugin() {
         } catch (_: Exception) {}
     }
 
+    private fun requestStopRecordingFromPlugin() {
+        val act = cordova.activity ?: return
+        try {
+            val stopIntent = Intent(act, RecordingService::class.java).apply {
+                action = "STOP_RECORDING"
+            }
+            act.runOnUiThread {
+            try {               
+                act.startService(stopIntent)
+            } catch (_: Exception) {}
+        }
+        } catch (_: Exception) {}
+    }
+
     override fun onPause(multitasking: Boolean) {
         super.onPause(multitasking)
         requestStopPreviewFromPlugin()
@@ -310,5 +324,6 @@ class VideoRecorder : CordovaPlugin() {
     override fun onDestroy() {
         super.onDestroy()
         requestStopPreviewFromPlugin()
+        requestStopRecordingFromPlugin()
     }
 }

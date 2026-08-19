@@ -499,6 +499,7 @@ class VideoRecorder: CDVPlugin {
         backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "VideoRecorder") { [weak self] in
             guard let self = self else { return }
             NSLog("[VideoRecorder] Background task expired")
+               self.stopRecording()
             self.endBackgroundTask()
         }
         NSLog("[VideoRecorder] Background task started: \(backgroundTask.rawValue)")
