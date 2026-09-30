@@ -517,7 +517,7 @@ class VideoRecorder: CDVPlugin {
         NSLog("[VideoRecorder] dispatchFinalUrl: \(finalUrl)")
         let js = """
         document.dispatchEvent(new CustomEvent('VideoRecorderFinished', {
-            detail: { file: '\(finalUrl)' }
+            detail: { file: '\(finalUrl)', width: \(videoWidth), height: \(videoHeight) }
         }));
         """
         DispatchQueue.main.async {
@@ -850,9 +850,8 @@ extension VideoRecorder: AVCaptureFileOutputRecordingDelegate {
 
             if self.saveToGallery {
                 self.saveToPhotosAndExport(url: finalURL)
-            } else {
-                self.dispatchFinalUrl("file://\(finalURL.path)")
-            }
+            } 
+            self.dispatchFinalUrl("file://\(finalURL.path)")            
         }
     }
 }
