@@ -38,7 +38,7 @@ import java.util.*
 class RecordingService : Service() {
 
     companion object {
-        var stopWithCallback: ((String?) -> Unit)? = null
+        var stopWithCallback: ((String?, Int?, Int?) -> Unit)? = null
         private const val CHANNEL_ID = "video_recorder_channel"
         private const val TAG = "RecordingService"
 
@@ -361,9 +361,8 @@ class RecordingService : Service() {
     }
 
     private fun setupMediaRecorder() {
-        val dir = getExternalFilesDir(Environment.DIRECTORY_MOVIES)
-        if (dir != null && !dir.exists()) dir.mkdirs()
-
+        //app files
+        val dir = filesDir.apply { if (!exists()) mkdirs() }     
         val cameraId = findCameraIdForFacing(cameraFacing)
         val chosen = chooseBestSize(cameraId, videoWidth, videoHeight, MediaRecorder::class.java)
         if (chosen != null) {
@@ -841,7 +840,7 @@ class RecordingService : Service() {
     // ----------------------------------------------------------------------
      private fun stopRecording() {
           if (!isRecording) {
-               stopWithCallback?.invoke(null)
+               stopWithCallback?.invoke(null, null, null)
                stopWithCallback = null
                cleanupPreview()
                removeNotificationAndStop()
@@ -874,7 +873,7 @@ class RecordingService : Service() {
           removeNotificationAndStop()
 
           if (originalPath == null) {
-               stopWithCallback?.invoke(null)
+               stopWithCallback?.invoke(null, null, null)
                stopWithCallback = null
                return
           }
@@ -884,15 +883,19 @@ class RecordingService : Service() {
           if (watermarkEnabled && watermarkImage != null) {
                val wmFile = resolveWatermarkAsset(watermarkImage!!)
                if (wmFile != null) {
-                    exportWithWatermark(originalFile, wmFile, watermarkPosition) { watermarked ->
-                         val finalFile = watermarked ?: originalFile
-                         if (saveToGallery) {
-                              stopWithCallback?.invoke(moveToGallery(finalFile.absolutePath))
-                         } else {
-                              stopWithCallback?.invoke("file://${finalFile.absolutePath}")
-                         }
-                         stopWithCallback = null
-                         // no need to call stopForeground/stopSelf again
+                    exportWithWatermark(originalFile, wmFile, watermarkPosition) { watermarked ->     
+                            if(watermarked != null){
+                                if (saveToGallery) {
+                                    moveToGallery(watermarked.absolutePath)
+                                } 
+                                //here need to delete tmp file                         
+                                originalFile.delete()                                
+                                //broadcast watermarked file in data dir
+                                val wmPath = watermarked.absolutePath
+                                stopWithCallback?.invoke("file://$wmPath", videoWidth, videoHeight)              
+                                stopWithCallback = null
+                                // no need to call stopForeground/stopSelf again
+                            }
                     }
                     return
                }
@@ -900,10 +903,9 @@ class RecordingService : Service() {
 
           // No watermark
           if (saveToGallery) {
-               stopWithCallback?.invoke(moveToGallery(originalPath))
-          } else {
-               stopWithCallback?.invoke("file://$originalPath")
-          }
+               moveToGallery(originalPath)
+          } 
+          stopWithCallback?.invoke("file://$originalPath", videoWidth, videoHeight)       
           stopWithCallback = null
      }
 
@@ -942,7 +944,7 @@ class RecordingService : Service() {
     }
 
     private fun exportWithWatermark(input: File, watermark: File, position: String, callback: (File?) -> Unit) {
-        val output = File(cacheDir, "VID_WM_${System.currentTimeMillis()}.mp4")
+        val output = File(filesDir, "VID_WM_${System.currentTimeMillis()}.mp4")      
         val overlayPos = ffmpegOverlayPosition(position)
         val cmd = arrayOf(
             "-i", input.absolutePath,

@@ -88,12 +88,14 @@ class VideoRecorder : CordovaPlugin() {
         }
 
         // CALLBACK FROM RecordingService
-        RecordingService.stopWithCallback = { filePath: String? ->
+        RecordingService.stopWithCallback = { filePath: String?, videoWidth: Int?, videoHeight: Int? ->
             val safePath: String = filePath ?: ""
+            val safeWidth: Int = videoWidth ?: 0
+            val safeHeight: Int = videoHeight ?: 0
 
             val js = """
                 document.dispatchEvent(new CustomEvent('VideoRecorderFinished', {
-                    detail: { file: '$safePath' }
+                    detail: { file: '$safePath', width: $safeWidth, height: $safeHeight }
                 }));
             """.trimIndent()
 
