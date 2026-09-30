@@ -850,8 +850,9 @@ extension VideoRecorder: AVCaptureFileOutputRecordingDelegate {
 
             if self.saveToGallery {
                 self.saveToPhotosAndExport(url: finalURL)
-            } 
-            self.dispatchFinalUrl("file://\(finalURL.path)")            
+            } else {
+                self.dispatchFinalUrl("file://\(finalURL.path)")      
+            }     
         }
     }
 }
