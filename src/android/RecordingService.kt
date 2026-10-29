@@ -52,7 +52,7 @@ class RecordingService : Service() {
     private var mediaRecorder: MediaRecorder? = null
     private var outputFile: String? = null
 
-    // ---------- Recording settings (independent) ----------
+    // RECORDING
     private var videoWidth = 1920
     private var videoHeight = 1080
     private var videoBitrate = 10_000_000
@@ -72,14 +72,10 @@ class RecordingService : Service() {
     private var previewHandlerThread: HandlerThread? = null
     private var previewHandler: Handler? = null
     private var lastPreviewSentAt = 0L
-
-    private var previewWidth = 1280
-    private var previewHeight = 720
     private var previewTargetFps = 15
     private var previewJpegQuality = 90      
     private var previewCameraFacing: Int = CameraCharacteristics.LENS_FACING_BACK
-
-    // ---------------------------------------------------------------
+    private var previewScale = 1
 
     override fun onCreate() {
         super.onCreate()
@@ -116,6 +112,13 @@ class RecordingService : Service() {
             }
 
             when (intent.action) {
+                "SET_RESOLUTION" -> {
+                    val resolution = intent.getStringExtra("resolution") ?: "${videoWidth}x${videoHeight}"
+                    parseResolution(resolution)
+                }
+            }
+
+            when (intent.action) {
                 "START_RECORDING" -> {
                     try {
                         val resolution = intent.getStringExtra("resolution") ?: "${videoWidth}x${videoHeight}"
@@ -128,7 +131,7 @@ class RecordingService : Service() {
                         watermarkImage = intent.getStringExtra("watermarkImage") ?: watermarkImage
                         watermarkPosition = intent.getStringExtra("watermarkPosition") ?: watermarkPosition
 
-                        parseResolution(resolution, isPreview = false)
+                        parseResolution(resolution)
                         videoBitrate = bitrate
                         maxLengthSec = maxLength
                         cameraFacing = if (camera.lowercase(Locale.US) == "front") {
@@ -164,9 +167,9 @@ class RecordingService : Service() {
                             CameraCharacteristics.LENS_FACING_BACK
                         }
 
-                        parseResolution(resolution, isPreview = true)
+                        parseResolution(resolution)
                         previewTargetFps = if (fps > 0) fps else 15
-                        previewJpegQuality = quality
+                        previewJpegQuality = quality    
 
                         Log.d(TAG, "START_PREVIEW: ${previewWidth}x${previewHeight} @ ${previewTargetFps}fps")
                         startPreviewMode()
@@ -240,19 +243,16 @@ class RecordingService : Service() {
     // Helpers
     // ----------------------------------------------------------------------
 
-    private fun parseResolution(resolution: String, isPreview: Boolean) {
+    private fun parseResolution(resolution: String) {
         val parts = resolution.lowercase(Locale.US).split("x")
         if (parts.size == 2) {
             val w = parts[0].toIntOrNull()
             val h = parts[1].toIntOrNull()
-            if (w != null && h != null && w > 0 && h > 0) {
-                if (isPreview) {
-                    previewWidth = w
-                    previewHeight = h
-                } else {
-                    videoWidth = w
-                    videoHeight = h
-                }
+            if (w != null && h != null && w > 0 && h > 0) {              
+                videoWidth = w
+                videoHeight = h
+                previewWidth = videoWidth * previewScale
+                previewHeight = videoHeight * previewScale                
             }
         }
     }

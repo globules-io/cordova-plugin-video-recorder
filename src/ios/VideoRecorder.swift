@@ -37,8 +37,8 @@ class VideoRecorder: CDVPlugin {
     private var lastPreviewSentAt: TimeInterval = 0
     private var ciContext: CIContext? = CIContext(options: [.useSoftwareRenderer: false])
 
-    private var previewWidth: Int = 1280
-    private var previewHeight: Int = 720
+    private var previewWidth: Int = 0
+    private var previewHeight: Int = 0
     private var previewCameraPosition: AVCaptureDevice.Position = .back
     private var previewJpegQuality: CGFloat = 0.85
     private var previewScale: CGFloat = 1.0
@@ -163,20 +163,8 @@ class VideoRecorder: CDVPlugin {
           if let cam = options["camera"] as? String {
                previewCameraPosition = cam.lowercased() == "front" ? .front : .back
           }
-          if let res = options["resolution"] as? String {
-               let parts = res.lowercased().split(separator: "x")
-               if parts.count == 2,
-                    let w = Int(parts[0]), let h = Int(parts[1]),
-                    w > 0, h > 0 {
-                    previewWidth = w
-                    previewHeight = h
-               }
-          }
-          if let ratio = options["ratio"] as? Double, ratio > 0 && ratio <= 1.0 {
-            previewScale = CGFloat(ratio)
-        } else if let ratio = options["ratio"] as? Int, ratio > 0 && ratio <= 100 {
-            previewScale = CGFloat(ratio) / 100.0
-        }
+            previewWidth  = Int(CGFloat(videoWidth)  * ratio)
+            previewHeight = Int(CGFloat(videoHeight) * ratio)         
 
           NSLog("[VideoRecorder] previewStart called fps=\(previewTargetFps), quality=\(previewJpegQuality), camera=\(previewCameraPosition == .front ? "front" : "back"), res=\(previewWidth)x\(previewHeight), callbackId=\(command.callbackId ?? "nil")")
 
@@ -228,6 +216,23 @@ class VideoRecorder: CDVPlugin {
             NSLog("[VideoRecorder] WARNING: no callback id available to send preview_stopped")
         }
         previewCallbackId = nil
+    }
+
+    // Resolution 
+    
+    @objc(setResolution:)
+    func setResolution(command: CDVInvokedUrlCommand) {
+        NSLog("[VideoRecorder] setResolution called")
+        let options = command.arguments.first as? [String: Any] ?? [:]    
+        if let res = options["resolution"] as? String {
+            let parts = res.lowercased().split(separator: "x")
+            if parts.count == 2,
+               let w = Int(parts[0]), let h = Int(parts[1]),
+               w > 0, h > 0 {
+                videoWidth = w
+                videoHeight = h
+            }
+        }
     }
 
     //  Recording

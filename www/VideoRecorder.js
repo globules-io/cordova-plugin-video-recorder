@@ -17,6 +17,14 @@ var VideoRecorder = {
           exec(success, error, 'VideoRecorder', 'stop', []);
      },
 
+     startRecording: function (options, success, error){
+          this.start(options, success, error);
+     },
+
+     stopRecording: function (success, error) {
+          this.stop(options, success, error);
+     },
+
      /**
       * Enable or disable native preview forwarding to JS.
       *
@@ -91,7 +99,12 @@ var VideoRecorder = {
      // stopPreview(onStopped, onError)
      stopPreview: function (onStopped, onError) {
           this.preview(false, onStopped, onError);
-     },
+     },     
+
+     // set main resolution
+     setResolution: function (width, height, success, error) {
+          exec(success || function () {}, error || function () {}, 'VideoRecorder', 'setResolution', [width, height]);
+     }
 };
 
 module.exports = VideoRecorder;
