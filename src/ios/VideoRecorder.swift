@@ -163,8 +163,8 @@ class VideoRecorder: CDVPlugin {
           if let cam = options["camera"] as? String {
                previewCameraPosition = cam.lowercased() == "front" ? .front : .back
           }
-            previewWidth  = Int(CGFloat(videoWidth)  * ratio)
-            previewHeight = Int(CGFloat(videoHeight) * ratio)         
+           previewWidth  = max(1, Int(CGFloat(videoWidth)  * ratio))
+            previewHeight = max(1, Int(CGFloat(videoHeight) * ratio))       
 
           NSLog("[VideoRecorder] previewStart called fps=\(previewTargetFps), quality=\(previewJpegQuality), camera=\(previewCameraPosition == .front ? "front" : "back"), res=\(previewWidth)x\(previewHeight), callbackId=\(command.callbackId ?? "nil")")
 
@@ -231,6 +231,8 @@ class VideoRecorder: CDVPlugin {
                w > 0, h > 0 {
                 videoWidth = w
                 videoHeight = h
+                previewWidth  = max(1, Int(CGFloat(videoWidth)  * ratio))
+                previewHeight = max(1, Int(CGFloat(videoHeight) * ratio))       
             }
         }
     }
