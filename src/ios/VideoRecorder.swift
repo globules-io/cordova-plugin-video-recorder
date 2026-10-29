@@ -41,6 +41,7 @@ class VideoRecorder: CDVPlugin {
     private var previewHeight: Int = 720
     private var previewCameraPosition: AVCaptureDevice.Position = .back
     private var previewJpegQuality: CGFloat = 0.85
+    private var previewScale: CGFloat = 1.0
 
     private let previewMaxLongSide = 1280
 
@@ -171,6 +172,11 @@ class VideoRecorder: CDVPlugin {
                     previewHeight = h
                }
           }
+          if let ratio = options["ratio"] as? Double, ratio > 0 && ratio <= 1.0 {
+            previewScale = CGFloat(ratio)
+        } else if let ratio = options["ratio"] as? Int, ratio > 0 && ratio <= 100 {
+            previewScale = CGFloat(ratio) / 100.0
+        }
 
           NSLog("[VideoRecorder] previewStart called fps=\(previewTargetFps), quality=\(previewJpegQuality), camera=\(previewCameraPosition == .front ? "front" : "back"), res=\(previewWidth)x\(previewHeight), callbackId=\(command.callbackId ?? "nil")")
 
@@ -473,24 +479,30 @@ class VideoRecorder: CDVPlugin {
 
     //  JPEG
 
-    private func jpegDataFromSampleBuffer(_ sampleBuffer: CMSampleBuffer, quality: CGFloat = 0.85) -> Data? {
-        guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else {
-            NSLog("[VideoRecorder] jpegData: no pixel buffer")
-            return nil
-        }
+    private func jpegDataFromSampleBuffer(_ sampleBuffer: CMSampleBuffer, quality: CGFloat = 0.85, scale: CGFloat = 1.0) -> Data? {
+        guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return nil }
         let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
 
-        if ciContext == nil {
-            ciContext = CIContext(options: [.useSoftwareRenderer: false])
-            NSLog("[VideoRecorder] Created new CIContext")
-        }
-        guard let context = ciContext,
-              let cgImage = context.createCGImage(ciImage, from: ciImage.extent) else {
-            NSLog("[VideoRecorder] jpegData: failed to create CGImage")
+        guard let context = ciContext ?? CIContext(options: [.useSoftwareRenderer: false]),
+            let cgImage = context.createCGImage(ciImage, from: ciImage.extent) else {
             return nil
         }
 
-        return UIImage(cgImage: cgImage).jpegData(compressionQuality: quality)
+        var image = UIImage(cgImage: cgImage)
+
+        // Scale down if requested
+        if scale < 1.0 {
+            let newSize = CGSize(width: image.size.width * scale,
+                                height: image.size.height * scale)
+            UIGraphicsBeginImageContextWithOptions(newSize, true, 1.0)
+            image.draw(in: CGRect(origin: .zero, size: newSize))
+            if let scaled = UIGraphicsGetImageFromCurrentImageContext() {
+                image = scaled
+            }
+            UIGraphicsEndImageContext()
+        }
+
+        return image.jpegData(compressionQuality: quality)
     }
 
     //  Background task
@@ -878,7 +890,7 @@ extension VideoRecorder: AVCaptureVideoDataOutputSampleBufferDelegate {
         if minInterval > 0 && now - lastPreviewSentAt < minInterval { return }
         lastPreviewSentAt = now
 
-        guard let jpeg = jpegDataFromSampleBuffer(sampleBuffer, quality: previewJpegQuality) else {
+        guard let jpeg = jpegDataFromSampleBuffer(sampleBuffer, quality: previewJpegQuality, scale: previewScale) else {
             if previewFrameCount % 30 == 0 {
                 NSLog("[VideoRecorder] captureOutput: JPEG conversion failed (frame \(previewFrameCount))")
             }

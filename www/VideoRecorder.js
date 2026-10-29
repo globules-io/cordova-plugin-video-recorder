@@ -6,7 +6,7 @@ var VideoRecorder = {
           // options:
           // - camera: "front" | "back" (default: "back")
           // - maxLength: number (seconds, 0 = unlimited)
-          // - resolution: "WIDTHxHEIGHT" (e.g. "1920x1080")
+          // - resolution: "WIDTHxHEIGHT" (e.g. "1920x1080")         
           // - bitrate: number (bits per second)
           // - saveToGallery: boolean
           // - watermark: false
@@ -50,7 +50,7 @@ var VideoRecorder = {
 
           // If arg is an array, forward it (handles older callers that pass arrays)
           if (Array.isArray(arg)) {
-               // Examples: [true], [false], [{ camera: 'front', resolution: '1080x1920' }]
+               // Examples: [true], [false], [{ camera: 'front', resolution: '1080x1920', ... }]
                exec(success || function () {}, error || function () {}, 'VideoRecorder', 'preview', arg);
                return;
           }
@@ -83,9 +83,9 @@ var VideoRecorder = {
           // allow startPreview(onFrame) or startPreview(options, onFrame)
           if (typeof options === 'function') {
                onFrame = options;
-               options = { fps: 10 };
+               options = { fps: 10, ratio: 0.3, quality: 40 };
           }
-          this.preview(options || { fps: 10 }, onFrame, onError);
+          this.preview(options || { fps: 10, ratio: 0.3, quality: 40 }, onFrame, onError);
      },
 
      // stopPreview(onStopped, onError)
