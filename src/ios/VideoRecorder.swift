@@ -37,12 +37,17 @@ class VideoRecorder: CDVPlugin {
     private var lastPreviewSentAt: TimeInterval = 0
     private var ciContext: CIContext? = CIContext(options: [.useSoftwareRenderer: false])
 
-    private var previewWidth: Int = 1280
-    private var previewHeight: Int = 720
+    private var previewWidth: Int = 0
+    private var previewHeight: Int = 0
     private var previewCameraPosition: AVCaptureDevice.Position = .back
-    private var previewJpegQuality: CGFloat = 0.85
+    private var previewJpegQuality: CGFloat = 0.40
+    private var previewScale: CGFloat = 0.3
 
-    private let previewMaxLongSide = 1280
+    private let stillJpegQuality: CGFloat = 0.90
+    private let captureFrameLock = NSLock()
+    private var captureFrameCallbackId: String?
+    private var captureFramePending = false
+    private var previewStartRequested = false
 
     // Frame counter for logging (reset on each start)
     private var previewFrameCount: Int = 0
@@ -51,30 +56,69 @@ class VideoRecorder: CDVPlugin {
     private let recordingQueue = DispatchQueue(label: "VideoRecorder.RecordingQueue", qos: .userInitiated)
 
     //  Cordova actions
+    //
+    //  setCamera({ camera, resolution }) is shared by recording and preview.
+    //  Until it is called, camera is "back" and resolution is 1920x1080.
+    //  startRecording falls back to maxLength 0, bitrate 10000000, saveToGallery false, watermark off.
+    //  startPreview falls back to scale 0.3, fps 10, quality 40.
 
-    @objc(start:)
-    func start(command: CDVInvokedUrlCommand) {
+    @objc(setCamera:)
+    func setCamera(command: CDVInvokedUrlCommand) {
+        let options = command.arguments.first as? [String: Any] ?? [:]
+
+        var nextCamera = cameraPosition
+        var nextWidth = videoWidth
+        var nextHeight = videoHeight
+
+        if options["camera"] != nil {
+            guard let cam = options["camera"] as? String else {
+                let err = CDVPluginResult(status: .error, messageAs: "camera must be \"front\" or \"back\"")
+                commandDelegate.send(err, callbackId: command.callbackId)
+                return
+            }
+            let lower = cam.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if lower != "front" && lower != "back" {
+                let err = CDVPluginResult(status: .error, messageAs: "camera must be \"front\" or \"back\"")
+                commandDelegate.send(err, callbackId: command.callbackId)
+                return
+            }
+            nextCamera = lower == "front" ? .front : .back
+        }
+
+        if options["resolution"] != nil {
+            guard let res = options["resolution"] as? String,
+                  let parsed = parseResolution(res) else {
+                let err = CDVPluginResult(status: .error, messageAs: "resolution must be WIDTHxHEIGHT")
+                commandDelegate.send(err, callbackId: command.callbackId)
+                return
+            }
+            nextWidth = parsed.width
+            nextHeight = parsed.height
+        }
+
+        cameraPosition = nextCamera
+        previewCameraPosition = nextCamera
+        videoWidth = nextWidth
+        videoHeight = nextHeight
+
+        NSLog("[VideoRecorder] setCamera camera=\(cameraPosition == .front ? "front" : "back") resolution=\(videoWidth)x\(videoHeight)")
+        let result = CDVPluginResult(status: .ok)
+        commandDelegate.send(result, callbackId: command.callbackId)
+    }
+
+    @objc(startRecording:)
+    func onStartRecording(command: CDVInvokedUrlCommand) {
         self.callbackId = command.callbackId
 
         let options = command.arguments.first as? [String: Any] ?? [:]
 
-        maxLengthSec = options["maxLength"] as? Int ?? 0
-        bitrate = options["bitrate"] as? Int ?? 10_000_000
-        saveToGallery = options["saveToGallery"] as? Bool ?? false
+        let requestedLength = intOption(options, "maxLength", fallback: 0)
+        maxLengthSec = requestedLength > 0 ? requestedLength : 0
 
-        if let res = options["resolution"] as? String {
-            let parts = res.lowercased().split(separator: "x")
-            if parts.count == 2,
-               let w = Int(parts[0]), let h = Int(parts[1]),
-               w > 0, h > 0 {
-                videoWidth = w
-                videoHeight = h
-            }
-        }
+        let requestedBitrate = intOption(options, "bitrate", fallback: 10_000_000)
+        bitrate = requestedBitrate > 0 ? requestedBitrate : 10_000_000
 
-        if let cam = options["camera"] as? String {
-            cameraPosition = cam.lowercased() == "front" ? .front : .back
-        }
+        saveToGallery = boolOption(options, "saveToGallery", fallback: false)
 
         if let wm = options["watermark"] as? [String: Any] {
             watermarkEnabled = true
@@ -83,13 +127,13 @@ class VideoRecorder: CDVPlugin {
         } else {
             watermarkEnabled = false
             watermarkImage = nil
+            watermarkPosition = "bottomright"
         }
 
-        NSLog("[VideoRecorder] start called, maxLength=\(maxLengthSec), requested=\(videoWidth)x\(videoHeight), camera=\(cameraPosition == .front ? "front" : "back"), saveToGallery=\(saveToGallery), watermark=\(watermarkEnabled)")
+        NSLog("[VideoRecorder] startRecording maxLength=\(maxLengthSec), requested=\(videoWidth)x\(videoHeight), camera=\(cameraPosition == .front ? "front" : "back"), bitrate=\(bitrate), saveToGallery=\(saveToGallery), watermark=\(watermarkEnabled)")
 
         startBackgroundTask()
 
-        // Move session setup + startRecording onto a background queue
         recordingQueue.async { [weak self] in
             guard let self = self else { return }
             self.setupSession()
@@ -100,112 +144,64 @@ class VideoRecorder: CDVPlugin {
         commandDelegate.send(result, callbackId: command.callbackId)
     }
 
-    @objc(stop:)
-    func stop(command: CDVInvokedUrlCommand) {
-        NSLog("[VideoRecorder] stop called")
+    @objc(stopRecording:)
+    func onStopRecording(command: CDVInvokedUrlCommand) {
+        NSLog("[VideoRecorder] stopRecording called")
         self.callbackId = command.callbackId
         stopRecording()
+        let result = CDVPluginResult(status: .ok)
+        commandDelegate.send(result, callbackId: command.callbackId)
     }
 
-    //  Preview actions
+    @objc(startPreview:)
+    func startPreview(command: CDVInvokedUrlCommand) {
+        let options = command.arguments.first as? [String: Any] ?? [:]
 
-    @objc(preview:)
-    func preview(command: CDVInvokedUrlCommand) {
-        let arg = command.arguments.first
-        NSLog("[VideoRecorder] preview() called with arg type: \(type(of: arg)) value: \(String(describing: arg))")
+        let fps = intOption(options, "fps", fallback: 10)
+        previewTargetFps = fps > 0 ? fps : 10
 
-        if arg is [String: Any] {
-            previewStart(command: command)
-            return
-        }
+        let quality = intOption(options, "quality", fallback: 40)
+        let clampedQuality = (quality >= 1 && quality <= 100) ? quality : 40
+        previewJpegQuality = CGFloat(clampedQuality) / 100.0
 
-        if let boolArg = arg as? Bool {
-            boolArg ? previewStart(command: command) : previewStop(command: command)
-            return
-        }
+        let scale = doubleOption(options, "scale", fallback: 0.3)
+        previewScale = CGFloat(scale > 0 ? scale : 0.3)
 
-        if let strArg = arg as? String {
-            let lower = strArg.lowercased()
-            if lower == "start" { previewStart(command: command); return }
-            if lower == "stop"  { previewStop(command: command); return }
-        }
+        previewCameraPosition = cameraPosition
+        previewWidth = max(1, Int((CGFloat(videoWidth) * previewScale).rounded()))
+        previewHeight = max(1, Int((CGFloat(videoHeight) * previewScale).rounded()))
 
-        if let arr = arg as? [Any], let first = arr.first {
-            if let b = first as? Bool {
-                b ? previewStart(command: command) : previewStop(command: command)
-                return
+        NSLog("[VideoRecorder] startPreview fps=\(previewTargetFps), quality=\(previewJpegQuality), scale=\(previewScale), camera=\(previewCameraPosition == .front ? "front" : "back"), res=\(previewWidth)x\(previewHeight), callbackId=\(command.callbackId ?? "nil")")
+
+        previewCallbackId = command.callbackId
+        previewStartRequested = true
+
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+
+            NSLog("[VideoRecorder] startPreview: forcing clean stop before restart")
+            self.stopPreviewSession(cancelCapture: false)
+
+            self.previewEnabled = true
+            self.lastPreviewSentAt = 0
+            self.previewFrameCount = 0
+
+            let startResult = CDVPluginResult(status: .ok, messageAs: "preview_started")
+            startResult.setKeepCallbackAs(true)
+            if let cb = self.previewCallbackId {
+                self.commandDelegate.send(startResult, callbackId: cb)
+                NSLog("[VideoRecorder] Sent 'preview_started' to JS")
+            } else {
+                NSLog("[VideoRecorder] WARNING: previewCallbackId is nil after assignment!")
             }
-            if let s = first as? String {
-                let lower = s.lowercased()
-                if lower == "start" { previewStart(command: command); return }
-                if lower == "stop"  { previewStop(command: command); return }
-            }
-            if first is [String: Any] {
-                previewStart(command: command)
-                return
-            }
-        }
 
-        previewEnabled ? previewStop(command: command) : previewStart(command: command)
+            self.setupPreviewSession()
+        }
     }
 
-   @objc(previewStart:)
-     func previewStart(command: CDVInvokedUrlCommand) {
-          let options = command.arguments.first as? [String: Any] ?? [:]
-
-          if let fps = options["fps"] as? Int, fps > 0 {
-               previewTargetFps = fps
-          }
-          if let quality = options["quality"] as? Int {
-               previewJpegQuality = CGFloat(max(1, min(100, quality))) / 100.0
-          }
-          if let cam = options["camera"] as? String {
-               previewCameraPosition = cam.lowercased() == "front" ? .front : .back
-          }
-          if let res = options["resolution"] as? String {
-               let parts = res.lowercased().split(separator: "x")
-               if parts.count == 2,
-                    let w = Int(parts[0]), let h = Int(parts[1]),
-                    w > 0, h > 0 {
-                    previewWidth = w
-                    previewHeight = h
-               }
-          }
-
-          NSLog("[VideoRecorder] previewStart called fps=\(previewTargetFps), quality=\(previewJpegQuality), camera=\(previewCameraPosition == .front ? "front" : "back"), res=\(previewWidth)x\(previewHeight), callbackId=\(command.callbackId ?? "nil")")
-
-          // Always take ownership of the new callback id
-          previewCallbackId = command.callbackId
-
-          DispatchQueue.main.async { [weak self] in
-               guard let self = self else { return }
-
-               // Clean stop first
-               NSLog("[VideoRecorder] previewStart: forcing clean stop before restart")
-               self.stopPreviewSession()
-
-               // NOW set the flag
-               self.previewEnabled = true
-               self.lastPreviewSentAt = 0
-               self.previewFrameCount = 0
-
-               let startResult = CDVPluginResult(status: .ok, messageAs: "preview_started")
-               startResult.setKeepCallbackAs(true)
-               if let cb = self.previewCallbackId {
-                    self.commandDelegate.send(startResult, callbackId: cb)
-                    NSLog("[VideoRecorder] Sent 'preview_started' to JS")
-               } else {
-                    NSLog("[VideoRecorder] WARNING: previewCallbackId is nil after assignment!")
-               }
-
-               // setupPreviewSession must NOT call stopPreviewSession again
-               self.setupPreviewSession()
-          }
-     }
-
-    @objc(previewStop:)
-    func previewStop(command: CDVInvokedUrlCommand) {
-        NSLog("[VideoRecorder] previewStop called  current previewEnabled=\(previewEnabled), frames sent so far=\(previewFrameCount)")
+    @objc(stopPreview:)
+    func stopPreview(command: CDVInvokedUrlCommand) {
+        NSLog("[VideoRecorder] stopPreview called  current previewEnabled=\(previewEnabled), frames sent so far=\(previewFrameCount)")
 
         stopPreviewSession()
 
@@ -224,7 +220,76 @@ class VideoRecorder: CDVPlugin {
         previewCallbackId = nil
     }
 
-    //  Recording
+    @objc(captureFrame:)
+    func captureFrame(command: CDVInvokedUrlCommand) {
+        guard previewEnabled || previewStartRequested else {
+            let err = CDVPluginResult(status: .error, messageAs: "preview is not running")
+            commandDelegate.send(err, callbackId: command.callbackId)
+            return
+        }
+
+        captureFrameLock.lock()
+        if captureFramePending {
+            captureFrameLock.unlock()
+            let err = CDVPluginResult(status: .error, messageAs: "capture already in progress")
+            commandDelegate.send(err, callbackId: command.callbackId)
+            return
+        }
+        NSLog("[VideoRecorder] captureFrame requested at \(videoWidth)x\(videoHeight)")
+        captureFrameCallbackId = command.callbackId
+        captureFramePending = true
+        captureFrameLock.unlock()
+    }
+
+    private func takePendingCaptureCallback() -> String? {
+        captureFrameLock.lock()
+        defer { captureFrameLock.unlock() }
+        guard captureFramePending, let cb = captureFrameCallbackId else { return nil }
+        captureFramePending = false
+        captureFrameCallbackId = nil
+        return cb
+    }
+
+    private func failPendingCapture(_ message: String) {
+        guard let cb = takePendingCaptureCallback() else { return }
+        let err = CDVPluginResult(status: .error, messageAs: message)
+        DispatchQueue.main.async { [weak self] in
+            self?.commandDelegate.send(err, callbackId: cb)
+        }
+    }
+
+    private func parseResolution(_ value: String) -> (width: Int, height: Int)? {
+        let parts = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased().split(separator: "x")
+        guard parts.count == 2,
+              let w = Int(parts[0]), let h = Int(parts[1]),
+              w > 0, h > 0 else {
+            return nil
+        }
+        return (w, h)
+    }
+
+    private func intOption(_ options: [String: Any], _ key: String, fallback: Int) -> Int {
+        guard let value = options[key], !(value is NSNull) else { return fallback }
+        if let n = value as? Int { return n }
+        if let n = value as? Double { return Int(n) }
+        if let n = value as? NSNumber { return n.intValue }
+        return fallback
+    }
+
+    private func doubleOption(_ options: [String: Any], _ key: String, fallback: Double) -> Double {
+        guard let value = options[key], !(value is NSNull) else { return fallback }
+        if let n = value as? Double { return n }
+        if let n = value as? Int { return Double(n) }
+        if let n = value as? NSNumber { return n.doubleValue }
+        return fallback
+    }
+
+    private func boolOption(_ options: [String: Any], _ key: String, fallback: Bool) -> Bool {
+        guard let value = options[key], !(value is NSNull) else { return fallback }
+        if let b = value as? Bool { return b }
+        if let n = value as? NSNumber { return n.boolValue }
+        return fallback
+    }
 
     private func setupSession() {
         NSLog("[VideoRecorder] setupSession for recording (on background queue)")
@@ -357,18 +422,20 @@ class VideoRecorder: CDVPlugin {
           NSLog("[VideoRecorder] setupPreviewSession starting (previewEnabled=\(previewEnabled))")
 
           // IMPORTANT: Do NOT call stopPreviewSession() here!
-          // previewStart already did a clean stop.
+          // startPreview already did a clean stop.
 
           let session = AVCaptureSession()
           session.beginConfiguration()
 
-          let requestedLong = max(previewWidth, previewHeight)
-          let targetLong = min(requestedLong, previewMaxLongSide)
-
-          if targetLong >= 1920 && session.canSetSessionPreset(.hd1920x1080) {
+          // Run the camera at the video resolution so captureFrame can take a full-size still.
+          // Preview frames are scaled down afterwards.
+          if (videoWidth >= 3840 || videoHeight >= 2160) && session.canSetSessionPreset(.hd4K3840x2160) {
+               session.sessionPreset = .hd4K3840x2160
+               NSLog("[VideoRecorder] Preview preset: 3840x2160")
+          } else if (videoWidth >= 1920 || videoHeight >= 1080) && session.canSetSessionPreset(.hd1920x1080) {
                session.sessionPreset = .hd1920x1080
                NSLog("[VideoRecorder] Preview preset: 1920x1080")
-          } else if targetLong >= 1280 && session.canSetSessionPreset(.hd1280x720) {
+          } else if (videoWidth >= 1280 || videoHeight >= 720) && session.canSetSessionPreset(.hd1280x720) {
                session.sessionPreset = .hd1280x720
                NSLog("[VideoRecorder] Preview preset: 1280x720")
           } else if session.canSetSessionPreset(.vga640x480) {
@@ -390,6 +457,8 @@ class VideoRecorder: CDVPlugin {
                     commandDelegate.send(err, callbackId: cb)
                }
                previewEnabled = false
+               previewStartRequested = false
+               self.failPendingCapture("preview is not running")
                return
           }
           session.addInput(input)
@@ -404,6 +473,8 @@ class VideoRecorder: CDVPlugin {
                NSLog("[VideoRecorder] ERROR: Preview  cannot add video output")
                session.commitConfiguration()
                previewEnabled = false
+               previewStartRequested = false
+               failPendingCapture("preview is not running")
                return
           }
           session.addOutput(videoOutput)
@@ -440,9 +511,12 @@ class VideoRecorder: CDVPlugin {
           }
 }
 
-    private func stopPreviewSession() {
+    private func stopPreviewSession(cancelCapture: Bool = true) {
         let wasEnabled = previewEnabled
         previewEnabled = false
+        if cancelCapture {
+            previewStartRequested = false
+        }
 
         NSLog("[VideoRecorder] stopPreviewSession  wasEnabled=\(wasEnabled), framesSent=\(previewFrameCount)")
 
@@ -467,30 +541,50 @@ class VideoRecorder: CDVPlugin {
         previewQueue = nil
         previewSession = nil
         lastPreviewSentAt = 0
+        if cancelCapture {
+            failPendingCapture("preview is not running")
+        }
         // NOTE: We deliberately do NOT clear previewCallbackId here.
-        // It is cleared only in previewStop so that late frames don't kill the session.
+        // It is cleared only in stopPreview so that late frames don't kill the session.
     }
 
     //  JPEG
 
-    private func jpegDataFromSampleBuffer(_ sampleBuffer: CMSampleBuffer, quality: CGFloat = 0.85) -> Data? {
-        guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else {
-            NSLog("[VideoRecorder] jpegData: no pixel buffer")
-            return nil
-        }
+    private func jpegDataFromSampleBuffer(
+        _ sampleBuffer: CMSampleBuffer,
+        quality: CGFloat = 0.40,
+        targetWidth: Int? = nil,
+        targetHeight: Int? = nil
+    ) -> Data? {
+        guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return nil }
         let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
 
-        if ciContext == nil {
-            ciContext = CIContext(options: [.useSoftwareRenderer: false])
-            NSLog("[VideoRecorder] Created new CIContext")
-        }
-        guard let context = ciContext,
-              let cgImage = context.createCGImage(ciImage, from: ciImage.extent) else {
-            NSLog("[VideoRecorder] jpegData: failed to create CGImage")
+        guard let context = ciContext ?? CIContext(options: [.useSoftwareRenderer: false]),
+            let cgImage = context.createCGImage(ciImage, from: ciImage.extent) else {
             return nil
         }
 
-        return UIImage(cgImage: cgImage).jpegData(compressionQuality: quality)
+        var image = UIImage(cgImage: cgImage)
+
+        // Session presets only approximate the requested size. Scale the frame the rest of the way.
+        // Preview passes no target and uses the scaled preview size. captureFrame passes the video size.
+        let width = targetWidth ?? previewWidth
+        let height = targetHeight ?? previewHeight
+        let targetLong = CGFloat(max(width, height))
+        let capturedLong = max(image.size.width, image.size.height)
+        if targetLong > 0 && capturedLong > targetLong + 1 {
+            let frameScale = targetLong / capturedLong
+            let newSize = CGSize(width: image.size.width * frameScale,
+                                height: image.size.height * frameScale)
+            UIGraphicsBeginImageContextWithOptions(newSize, true, 1.0)
+            image.draw(in: CGRect(origin: .zero, size: newSize))
+            if let scaled = UIGraphicsGetImageFromCurrentImageContext() {
+                image = scaled
+            }
+            UIGraphicsEndImageContext()
+        }
+
+        return image.jpegData(compressionQuality: quality)
     }
 
     //  Background task
@@ -865,6 +959,29 @@ extension VideoRecorder: AVCaptureVideoDataOutputSampleBufferDelegate {
                        from connection: AVCaptureConnection) {
 
         guard previewEnabled else { return }
+
+        if let captureCb = takePendingCaptureCallback() {
+            if let jpeg = jpegDataFromSampleBuffer(
+                sampleBuffer,
+                quality: stillJpegQuality,
+                targetWidth: videoWidth,
+                targetHeight: videoHeight
+            ) {
+                let dataUri = "data:image/jpeg;base64," + jpeg.base64EncodedString()
+                NSLog("[VideoRecorder] captureFrame sending still (\(jpeg.count) bytes, target \(videoWidth)x\(videoHeight))")
+                DispatchQueue.main.async { [weak self] in
+                    guard let self = self else { return }
+                    let result = CDVPluginResult(status: .ok, messageAs: dataUri)
+                    self.commandDelegate.send(result, callbackId: captureCb)
+                }
+            } else {
+                DispatchQueue.main.async { [weak self] in
+                    let err = CDVPluginResult(status: .error, messageAs: "capture failed")
+                    self?.commandDelegate.send(err, callbackId: captureCb)
+                }
+            }
+        }
+
         guard let cbId = previewCallbackId else {
             // Only log occasionally so we don't spam
             if previewFrameCount % 30 == 0 {

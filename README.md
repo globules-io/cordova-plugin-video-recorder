@@ -1,6 +1,6 @@
 # cordova-plugin-video-recorder
 > Cordova plugin for Android and iOS to natively record a video and display live preview as base64<br>
-> Recording and Preview are independent and can operate on different resolutions
+> Recording and preview run independently. They share the camera and resolution from the last `setCamera` call. Preview frames are that resolution multiplied by `scale`.
 
 ## Installation
 ```bash
@@ -19,31 +19,39 @@ cordova plugin rm @globules-io/cordova-plugin-video-recorder
 > Use the plugin / mechanism of your choice to request these permissions before starting the services
 
 ## JS API
-Start Recording
+Set the camera once. Recording and preview both use it until you call `setCamera` again.
+If you never call it, the native code uses `camera: "back"` and `resolution: "1920x1080"`.
+
 ```js
-VideoRecorder.start({
-     camera: "back",           // "front" or "back"
-     maxLength: 0,             // 0 = unlimited
-     resolution: "1920x1080",  // WIDTHxHEIGHT
-     bitrate: 10000000,        // bits per second
-     saveToGallery: false,     // save video to gallery
-     watermark: false          // see watermark
+VideoRecorder.setCamera({
+    camera: "front",          // "front" or "back"
+    resolution: "1024x768"    // WIDTHxHEIGHT
 });
 ```
 
-Stop Recording
+Start recording. Omitted options fall back to `maxLength: 0`, `bitrate: 10000000`, `saveToGallery: false`, and no watermark.
+
 ```js
-VideoRecorder.stop();
+VideoRecorder.startRecording({
+    maxLength: 0,             // seconds, 0 = unlimited
+    bitrate: 10000000,        // bits per second
+    saveToGallery: true,
+    watermark: false
+});
+```
+
+Stop recording
+```js
+VideoRecorder.stopRecording();
 ```
 
 Watermark
 ```js
-VideoRecorder.start({
-     ...,
-     watermark: {
-          image: "path_to_image",  //relative to cordova www
-          position: "bottomright"  //bottomright, topright, bottomleft, topleft
-     }
+VideoRecorder.startRecording({
+    watermark: {
+        image: "path_to_image",  // relative to cordova www
+        position: "bottomright" // bottomright, topright, bottomleft, topleft
+    }
 });
 ```
 
@@ -64,23 +72,37 @@ document.addEventListener("VideoRecorderFinished", e => {
 });
 ```
 
-Start Preview
+Start preview. Omitted options fall back to `scale: 0.3`, `fps: 10`, and `quality: 40`.
+The frame callback receives `"preview_started"`, then `data:image/jpeg;base64,...` frames.
+
 ```js
-VideoRecorder.startPreview({                            
-	  camera: "front",            // "front" or "back"            
-	  resolution: "1074x2136",    // WIDTHxHEIGHT
-	  fps: 10,                    // frames per second
-	  quality: 90                 // compression
-}, (__base64)=>{
-//do whatever you want with the base64	                  
+VideoRecorder.setCamera({
+    camera: "front",
+    resolution: "1024x768"
 });
-//or 
-VideoRecorder.preview({...}, (__base64)=>{});
+
+VideoRecorder.startPreview({
+    scale: 0.3,                 // preview size = resolution * scale
+    fps: 10,                    // frames per second
+    quality: 40                 // jpeg quality, 1-100
+}, function (frame) {
+    // use the base64 frame
+});
 ```
 
-Stop Preview 
+Stop preview
 ```js
 VideoRecorder.stopPreview();
-//or 
-VideoRecorder.preview(false);
+```
+
+Capture one still while preview is running. The image uses the `setCamera` resolution, not the scaled preview size. The success callback receives `data:image/jpeg;base64,...`.
+
+```js
+VideoRecorder.setCamera({ resolution: "1920x1080", camera: "back" });
+VideoRecorder.startPreview({ scale: 0.3, quality: 40 }, function () {});
+VideoRecorder.captureFrame(function (image) {
+    document.getElementById("still").src = image;
+}, function (err) {
+    console.log("capture failed", err);
+});
 ```
