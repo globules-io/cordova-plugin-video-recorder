@@ -72,10 +72,12 @@ class RecordingService : Service() {
     private var previewHandlerThread: HandlerThread? = null
     private var previewHandler: Handler? = null
     private var lastPreviewSentAt = 0L
-    private var previewTargetFps = 15
-    private var previewJpegQuality = 90      
+    private var previewTargetFps = 10
+    private var previewJpegQuality = 40
     private var previewCameraFacing: Int = CameraCharacteristics.LENS_FACING_BACK
-    private var previewScale = 1
+    private var previewScale = 0.3f
+    private var previewWidth = 576
+    private var previewHeight = 324
 
     override fun onCreate() {
         super.onCreate()
@@ -112,28 +114,29 @@ class RecordingService : Service() {
             }
 
             when (intent.action) {
-                "SET_RESOLUTION" -> {
-                    val resolution = intent.getStringExtra("resolution") ?: "${videoWidth}x${videoHeight}"
-                    parseResolution(resolution)
-                }
-            }
-
-            when (intent.action) {
                 "START_RECORDING" -> {
                     try {
-                        val resolution = intent.getStringExtra("resolution") ?: "${videoWidth}x${videoHeight}"
-                        val bitrate = intent.getIntExtra("bitrate", videoBitrate)
-                        val maxLength = intent.getIntExtra("maxLength", maxLengthSec)
-                        val camera = intent.getStringExtra("camera") ?: if (cameraFacing == CameraCharacteristics.LENS_FACING_FRONT) "front" else "back"
-                        saveToGallery = intent.getBooleanExtra("saveToGallery", saveToGallery)
+                        val resolution = intent.getStringExtra("resolution") ?: "1920x1080"
+                        val bitrate = intent.getIntExtra("bitrate", 10_000_000)
+                        val maxLength = intent.getIntExtra("maxLength", 0)
+                        val camera = intent.getStringExtra("camera") ?: "back"
+                        saveToGallery = intent.getBooleanExtra("saveToGallery", false)
 
-                        watermarkEnabled = intent.getBooleanExtra("watermarkEnabled", watermarkEnabled)
-                        watermarkImage = intent.getStringExtra("watermarkImage") ?: watermarkImage
-                        watermarkPosition = intent.getStringExtra("watermarkPosition") ?: watermarkPosition
+                        watermarkEnabled = intent.getBooleanExtra("watermarkEnabled", false)
+                        if (watermarkEnabled) {
+                            watermarkImage = intent.getStringExtra("watermarkImage")
+                            watermarkPosition = intent.getStringExtra("watermarkPosition") ?: "bottomright"
+                        } else {
+                            watermarkImage = null
+                            watermarkPosition = "bottomright"
+                        }
 
-                        parseResolution(resolution)
-                        videoBitrate = bitrate
-                        maxLengthSec = maxLength
+                        if (!parseResolution(resolution)) {
+                            videoWidth = 1920
+                            videoHeight = 1080
+                        }
+                        videoBitrate = if (bitrate > 0) bitrate else 10_000_000
+                        maxLengthSec = if (maxLength > 0) maxLength else 0
                         cameraFacing = if (camera.lowercase(Locale.US) == "front") {
                             CameraCharacteristics.LENS_FACING_FRONT
                         } else {
@@ -157,9 +160,10 @@ class RecordingService : Service() {
                 "START_PREVIEW" -> {
                     try {
                         val camera = intent.getStringExtra("camera") ?: "back"
-                        val resolution = intent.getStringExtra("resolution") ?: "1280x720"
-                        val fps = intent.getIntExtra("fps", 15)
-                        val quality = intent.getIntExtra("quality", 90)
+                        val resolution = intent.getStringExtra("resolution") ?: "1920x1080"
+                        val fps = intent.getIntExtra("fps", 10)
+                        val quality = intent.getIntExtra("quality", 40)
+                        val scale = intent.getFloatExtra("scale", 0.3f)
 
                         previewCameraFacing = if (camera.lowercase(Locale.US) == "front") {
                             CameraCharacteristics.LENS_FACING_FRONT
@@ -167,11 +171,11 @@ class RecordingService : Service() {
                             CameraCharacteristics.LENS_FACING_BACK
                         }
 
-                        parseResolution(resolution)
-                        previewTargetFps = if (fps > 0) fps else 15
-                        previewJpegQuality = quality    
+                        applyPreviewSize(resolution, scale)
+                        previewTargetFps = if (fps > 0) fps else 10
+                        previewJpegQuality = if (quality in 1..100) quality else 40
 
-                        Log.d(TAG, "START_PREVIEW: ${previewWidth}x${previewHeight} @ ${previewTargetFps}fps")
+                        Log.d(TAG, "START_PREVIEW: ${previewWidth}x${previewHeight} @ ${previewTargetFps}fps quality=$previewJpegQuality scale=$previewScale camera=$camera")
                         startPreviewMode()
                     } catch (e: Exception) {
                         Log.w(TAG, "START_PREVIEW failed: ${e.message}")
@@ -243,18 +247,38 @@ class RecordingService : Service() {
     // Helpers
     // ----------------------------------------------------------------------
 
-    private fun parseResolution(resolution: String) {
+    /** Recording size only. Preview size is resolution * scale and is applied separately. */
+    private fun parseResolution(resolution: String): Boolean {
         val parts = resolution.lowercase(Locale.US).split("x")
         if (parts.size == 2) {
             val w = parts[0].toIntOrNull()
             val h = parts[1].toIntOrNull()
-            if (w != null && h != null && w > 0 && h > 0) {              
+            if (w != null && h != null && w > 0 && h > 0) {
                 videoWidth = w
                 videoHeight = h
-                previewWidth = videoWidth * previewScale
-                previewHeight = videoHeight * previewScale                
+                return true
             }
         }
+        return false
+    }
+
+    private fun applyPreviewSize(resolution: String, scale: Float) {
+        val safeScale = if (scale > 0f) scale else 0.3f
+        previewScale = safeScale
+
+        var w = 1920
+        var h = 1080
+        val parts = resolution.lowercase(Locale.US).split("x")
+        if (parts.size == 2) {
+            val pw = parts[0].toIntOrNull()
+            val ph = parts[1].toIntOrNull()
+            if (pw != null && ph != null && pw > 0 && ph > 0) {
+                w = pw
+                h = ph
+            }
+        }
+        previewWidth = (w * safeScale).toInt().coerceAtLeast(1)
+        previewHeight = (h * safeScale).toInt().coerceAtLeast(1)
     }
 
     private fun findCameraIdForFacing(facing: Int): String? {
