@@ -94,3 +94,15 @@ Stop preview
 ```js
 VideoRecorder.stopPreview();
 ```
+
+Capture one still while preview is running. The image uses the `setCamera` resolution, not the scaled preview size. The success callback receives `data:image/jpeg;base64,...`.
+
+```js
+VideoRecorder.setCamera({ resolution: "1920x1080", camera: "back" });
+VideoRecorder.startPreview({ scale: 0.3, quality: 40 }, function () {});
+VideoRecorder.captureFrame(function (image) {
+    document.getElementById("still").src = image;
+}, function (err) {
+    console.log("capture failed", err);
+});
+```

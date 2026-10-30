@@ -44,6 +44,10 @@ class VideoRecorder : CordovaPlugin() {
                 stopPreview(callbackContext)
                 true
             }
+            "captureFrame" -> {
+                captureFrame(callbackContext)
+                true
+            }
             else -> false
         }
     }
@@ -285,6 +289,40 @@ class VideoRecorder : CordovaPlugin() {
                     activity.startService(intent)
                 }
             } catch (_: Exception) { /* ignore */ }
+        }
+    }
+
+    /**
+     * One still at the setCamera resolution. Preview must already be running.
+     * Success is "data:image/jpeg;base64,...".
+     */
+    private fun captureFrame(callbackContext: CallbackContext) {
+        val activity = cordova.activity ?: run {
+            callbackContext.error("No activity")
+            return
+        }
+
+        if (RecordingService.captureFrameCallback != null) {
+            callbackContext.error("capture already in progress")
+            return
+        }
+
+        RecordingService.captureFrameCallback = callback@{ image, error ->
+            val current = cordova.activity ?: return@callback
+            current.runOnUiThread {
+                if (error != null) callbackContext.error(error)
+                else callbackContext.success(image ?: "")
+            }
+        }
+
+        val intent = Intent(activity, RecordingService::class.java).apply {
+            action = "CAPTURE_FRAME"
+        }
+        try {
+            activity.startService(intent)
+        } catch (e: Exception) {
+            RecordingService.captureFrameCallback = null
+            callbackContext.error("Failed to capture frame: ${e.message}")
         }
     }
 

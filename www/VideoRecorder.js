@@ -10,6 +10,9 @@ var exec = require('cordova/exec');
  * startPreview options: { scale, fps, quality }
  *   defaults: scale 0.3, fps 10, quality 40
  *   onFrame receives "preview_started", then "data:image/jpeg;base64,..." frames.
+ *
+ * captureFrame() grabs one JPEG at the setCamera resolution while preview is running.
+ *   success receives "data:image/jpeg;base64,..."
  */
 var VideoRecorder = {
     setCamera: function (options, success, error) {
@@ -35,6 +38,10 @@ var VideoRecorder = {
 
     stopPreview: function (onStopped, onError) {
         exec(onStopped || function () {}, onError || function () {}, 'VideoRecorder', 'stopPreview', []);
+    },
+
+    captureFrame: function (success, error) {
+        exec(success, error, 'VideoRecorder', 'captureFrame', []);
     }
 };
 

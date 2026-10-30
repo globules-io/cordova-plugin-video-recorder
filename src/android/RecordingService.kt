@@ -44,6 +44,12 @@ class RecordingService : Service() {
 
         @Volatile
         var previewFrameCallback: ((String) -> Unit)? = null
+
+        /** image base64, or an error message. Exactly one of the two is non-null. */
+        @Volatile
+        var captureFrameCallback: ((String?, String?) -> Unit)? = null
+
+        private const val STILL_JPEG_QUALITY = 90
     }
 
     private lateinit var cameraManager: CameraManager
@@ -78,6 +84,15 @@ class RecordingService : Service() {
     private var previewScale = 0.3f
     private var previewWidth = 576
     private var previewHeight = 324
+    private var captureWidth = 1920
+    private var captureHeight = 1080
+    private var stillReader: ImageReader? = null
+    private var stillCapturePending = false
+    private var captureRequested = false
+    private val captureLock = Any()
+    private val stillTimeout = Runnable {
+        deliverCaptureResult(null, "capture timed out")
+    }
 
     override fun onCreate() {
         super.onCreate()
@@ -183,6 +198,16 @@ class RecordingService : Service() {
                     return START_STICKY
                 }
 
+                "CAPTURE_FRAME" -> {
+                    try {
+                        captureStillFrame()
+                    } catch (e: Exception) {
+                        Log.w(TAG, "CAPTURE_FRAME failed: ${e.message}")
+                        deliverCaptureResult(null, e.message ?: "capture failed")
+                    }
+                    return if (previewEnabled || isRecording) START_STICKY else START_NOT_STICKY
+                }
+
                 "STOP_PREVIEW" -> {
                     try { 
                          stopPreviewMode() 
@@ -277,6 +302,8 @@ class RecordingService : Service() {
                 h = ph
             }
         }
+        captureWidth = w
+        captureHeight = h
         previewWidth = (w * safeScale).toInt().coerceAtLeast(1)
         previewHeight = (h * safeScale).toInt().coerceAtLeast(1)
     }
@@ -531,7 +558,13 @@ class RecordingService : Service() {
             }
 
             val cameraId = findCameraIdForFacing(previewCameraFacing)
-                ?: cameraManager.cameraIdList.firstOrNull() ?: return
+                ?: cameraManager.cameraIdList.firstOrNull()
+            if (cameraId == null) {
+                previewEnabled = false
+                captureRequested = false
+                deliverCaptureResult(null, "preview is not running")
+                return
+            }
 
             // Choose a real supported size (prefer exact / rotated match)
             val best = chooseBestSize(
@@ -554,41 +587,15 @@ class RecordingService : Service() {
             }
             setPreviewImageAvailableListener(previewReader!!)
 
+            prepareStillReader(cameraId)
+
             val previewSurface = previewReader!!.surface
 
             // Case 1 ? camera already open (recording is active)
             if (cameraDevice != null) {
                 try { captureSession?.close() } catch (_: Exception) {}
                 captureSession = null
-
-                val targets = mutableListOf<android.view.Surface>()
-                mediaRecorder?.surface?.let { targets.add(it) }
-                targets.add(previewSurface)
-
-                cameraDevice?.createCaptureSession(
-                    targets,
-                    object : CameraCaptureSession.StateCallback() {
-                        override fun onConfigured(session: CameraCaptureSession) {
-                            captureSession = session
-                            try {
-                                val template = if (isRecording)
-                                    CameraDevice.TEMPLATE_RECORD
-                                else
-                                    CameraDevice.TEMPLATE_PREVIEW
-                                val requestBuilder = cameraDevice!!.createCaptureRequest(template)
-                                targets.forEach { requestBuilder.addTarget(it) }
-                                requestBuilder.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO)
-                                session.setRepeatingRequest(requestBuilder.build(), null, previewHandler)
-                            } catch (e: Exception) {
-                                Log.w(TAG, "Failed to set repeating request with preview: ${e.message}")
-                            }
-                        }
-                        override fun onConfigureFailed(session: CameraCaptureSession) {
-                            Log.w(TAG, "preview reconfigure failed")
-                        }
-                    },
-                    previewHandler
-                )
+                openPreviewSession(cameraDevice!!, previewSurface)
                 return
             }
 
@@ -597,26 +604,7 @@ class RecordingService : Service() {
                 override fun onOpened(device: CameraDevice) {
                     cameraDevice = device
                     try {
-                        device.createCaptureSession(
-                            listOf(previewSurface),
-                            object : CameraCaptureSession.StateCallback() {
-                                override fun onConfigured(session: CameraCaptureSession) {
-                                    captureSession = session
-                                    try {
-                                        val requestBuilder = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
-                                        requestBuilder.addTarget(previewSurface)
-                                        requestBuilder.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO)
-                                        session.setRepeatingRequest(requestBuilder.build(), null, previewHandler)
-                                    } catch (e: Exception) {
-                                        Log.w(TAG, "preview repeating request failed: ${e.message}")
-                                    }
-                                }
-                                override fun onConfigureFailed(session: CameraCaptureSession) {
-                                    Log.w(TAG, "preview-only session failed")
-                                }
-                            },
-                            previewHandler
-                        )
+                        openPreviewSession(device, previewSurface)
                     } catch (e: Exception) {
                         Log.w(TAG, "create preview session failed: ${e.message}")
                     }
@@ -624,10 +612,18 @@ class RecordingService : Service() {
                 override fun onDisconnected(device: CameraDevice) {
                     device.close()
                     cameraDevice = null
+                    if (captureRequested) {
+                        captureRequested = false
+                        deliverCaptureResult(null, "capture failed")
+                    }
                 }
                 override fun onError(device: CameraDevice, error: Int) {
                     device.close()
                     cameraDevice = null
+                    if (captureRequested) {
+                        captureRequested = false
+                        deliverCaptureResult(null, "capture failed")
+                    }
                 }
             }, previewHandler)
         } catch (e: Exception) {
@@ -635,6 +631,198 @@ class RecordingService : Service() {
             previewFrameCallback = null
             previewEnabled = false
         }
+    }
+
+    /**
+     * Preview session plus a JPEG still surface at the video resolution.
+     * The repeating request targets preview only. captureFrame uses the still surface once.
+     */
+    private fun openPreviewSession(device: CameraDevice, previewSurface: android.view.Surface) {
+        val recorderSurface = mediaRecorder?.surface
+
+        fun sessionSurfaces(withStill: Boolean): List<android.view.Surface> {
+            val list = mutableListOf<android.view.Surface>()
+            recorderSurface?.let { list.add(it) }
+            list.add(previewSurface)
+            if (withStill) stillReader?.surface?.let { list.add(it) }
+            return list
+        }
+
+        fun startRepeating(session: CameraCaptureSession) {
+            val repeating = mutableListOf<android.view.Surface>()
+            recorderSurface?.let { repeating.add(it) }
+            repeating.add(previewSurface)
+            val template = if (isRecording) {
+                CameraDevice.TEMPLATE_RECORD
+            } else {
+                CameraDevice.TEMPLATE_PREVIEW
+            }
+            val requestBuilder = device.createCaptureRequest(template)
+            repeating.forEach { requestBuilder.addTarget(it) }
+            requestBuilder.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO)
+            session.setRepeatingRequest(requestBuilder.build(), null, previewHandler)
+        }
+
+        fun create(withStill: Boolean) {
+            try {
+                device.createCaptureSession(
+                    sessionSurfaces(withStill),
+                    object : CameraCaptureSession.StateCallback() {
+                        override fun onConfigured(session: CameraCaptureSession) {
+                            captureSession = session
+                            try {
+                                startRepeating(session)
+                                Log.d(TAG, "preview session configured withStill=$withStill")
+                                if (captureRequested) {
+                                    captureRequested = false
+                                    captureStillFrame()
+                                }
+                            } catch (e: Exception) {
+                                Log.w(TAG, "preview repeating request failed: ${e.message}")
+                            }
+                        }
+
+                        override fun onConfigureFailed(session: CameraCaptureSession) {
+                            Log.w(TAG, "preview session failed withStill=$withStill")
+                            if (withStill) {
+                                closeStillReader()
+                                create(false)
+                            } else if (captureRequested) {
+                                captureRequested = false
+                                deliverCaptureResult(null, "capture unavailable")
+                            }
+                        }
+                    },
+                    previewHandler
+                )
+            } catch (e: Exception) {
+                Log.w(TAG, "createCaptureSession failed withStill=$withStill: ${e.message}")
+                if (withStill) {
+                    closeStillReader()
+                    create(false)
+                }
+            }
+        }
+
+        create(stillReader != null)
+    }
+
+    private fun prepareStillReader(cameraId: String) {
+        closeStillReader()
+        val best = chooseBestSize(cameraId, captureWidth, captureHeight, imageFormat = ImageFormat.JPEG)
+        if (best == null) {
+            Log.w(TAG, "no JPEG size for still capture ${captureWidth}x${captureHeight}")
+            return
+        }
+        Log.d(TAG, "still capture size ${best.width}x${best.height} (requested ${captureWidth}x${captureHeight})")
+        stillReader = ImageReader.newInstance(best.width, best.height, ImageFormat.JPEG, 2)
+        stillReader?.setOnImageAvailableListener({ reader ->
+            val image = try { reader.acquireLatestImage() } catch (_: Exception) { null }
+                ?: return@setOnImageAvailableListener
+            val pending = synchronized(captureLock) { stillCapturePending }
+            if (!pending) {
+                image.close()
+                return@setOnImageAvailableListener
+            }
+            try {
+                val buffer = image.planes[0].buffer
+                val bytes = ByteArray(buffer.remaining())
+                buffer.get(bytes)
+                image.close()
+                previewHandler?.removeCallbacks(stillTimeout)
+                val finalJpeg = applySensorOrientation(
+                    bytes,
+                    quality = STILL_JPEG_QUALITY,
+                    referenceWidth = captureWidth,
+                    referenceHeight = captureHeight
+                )
+                val b64 = android.util.Base64.encodeToString(finalJpeg, android.util.Base64.NO_WRAP)
+                deliverCaptureResult("data:image/jpeg;base64,$b64", null)
+            } catch (e: Exception) {
+                try { image.close() } catch (_: Exception) {}
+                previewHandler?.removeCallbacks(stillTimeout)
+                deliverCaptureResult(null, e.message ?: "capture failed")
+            }
+        }, previewHandler)
+    }
+
+    private fun captureStillFrame() {
+        val session = captureSession
+        val device = cameraDevice
+        val reader = stillReader
+        if (!previewEnabled) {
+            captureRequested = false
+            deliverCaptureResult(null, "preview is not running")
+            if (!isRecording) {
+                try { stopSelf() } catch (_: Exception) {}
+            }
+            return
+        }
+        if (session == null || device == null) {
+            captureRequested = true
+            Log.d(TAG, "captureFrame queued until the preview session is ready")
+            return
+        }
+        if (reader == null) {
+            captureRequested = false
+            deliverCaptureResult(null, "capture unavailable")
+            return
+        }
+
+        val started = synchronized(captureLock) {
+            if (stillCapturePending) {
+                false
+            } else {
+                stillCapturePending = true
+                true
+            }
+        }
+        if (!started) {
+            Log.w(TAG, "capture already in progress")
+            return
+        }
+
+        try {
+            val requestBuilder = device.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE)
+            requestBuilder.addTarget(reader.surface)
+            requestBuilder.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO)
+            requestBuilder.set(CaptureRequest.JPEG_QUALITY, STILL_JPEG_QUALITY.toByte())
+            session.capture(requestBuilder.build(), object : CameraCaptureSession.CaptureCallback() {
+                override fun onCaptureFailed(
+                    session: CameraCaptureSession,
+                    request: CaptureRequest,
+                    failure: CaptureFailure
+                ) {
+                    previewHandler?.removeCallbacks(stillTimeout)
+                    deliverCaptureResult(null, "capture failed")
+                }
+            }, previewHandler)
+            previewHandler?.removeCallbacks(stillTimeout)
+            previewHandler?.postDelayed(stillTimeout, 5000)
+        } catch (e: Exception) {
+            previewHandler?.removeCallbacks(stillTimeout)
+            deliverCaptureResult(null, e.message ?: "capture failed")
+        }
+    }
+
+    private fun deliverCaptureResult(image: String?, error: String?) {
+        val callback = synchronized(captureLock) {
+            val current = captureFrameCallback
+            captureFrameCallback = null
+            stillCapturePending = false
+            current
+        } ?: return
+        try {
+            callback.invoke(image, error)
+        } catch (e: Exception) {
+            Log.w(TAG, "capture callback failed: ${e.message}")
+        }
+    }
+
+    private fun closeStillReader() {
+        try { stillReader?.setOnImageAvailableListener(null, null) } catch (_: Exception) {}
+        try { stillReader?.close() } catch (_: Exception) {}
+        stillReader = null
     }
 
     private fun setPreviewImageAvailableListener(reader: ImageReader) {
@@ -692,7 +880,12 @@ class RecordingService : Service() {
     }
 
     // Simplified ? only rotates when needed, no second quality loss when rotation == 0
-    private fun applySensorOrientation(jpegBytes: ByteArray): ByteArray {
+    private fun applySensorOrientation(
+        jpegBytes: ByteArray,
+        quality: Int = previewJpegQuality,
+        referenceWidth: Int = previewWidth,
+        referenceHeight: Int = previewHeight
+    ): ByteArray {
         return try {
             val cameraId = findCameraIdForFacing(previewCameraFacing) ?: return jpegBytes
             val chars = cameraManager.getCameraCharacteristics(cameraId)
@@ -715,7 +908,7 @@ class RecordingService : Service() {
             }
 
             // Portrait adjustment (common for front cameras)
-            if (previewWidth < previewHeight && (rotation == 0 || rotation == 180)) {
+            if (referenceWidth < referenceHeight && (rotation == 0 || rotation == 180)) {
                 rotation = (rotation + 90) % 360
             }
 
@@ -735,7 +928,7 @@ class RecordingService : Service() {
 
             val out = ByteArrayOutputStream()
             // Keep the same high quality
-            rotated.compress(Bitmap.CompressFormat.JPEG, previewJpegQuality, out)
+            rotated.compress(Bitmap.CompressFormat.JPEG, quality, out)
             rotated.recycle()
             out.toByteArray()
         } catch (e: Exception) {
@@ -748,6 +941,10 @@ class RecordingService : Service() {
         try {
             previewEnabled = false
             previewFrameCallback = null
+            previewHandler?.removeCallbacks(stillTimeout)
+            captureRequested = false
+            deliverCaptureResult(null, "preview is not running")
+            closeStillReader()
 
             try { captureSession?.stopRepeating() } catch (_: Exception) {}
             try { captureSession?.abortCaptures() } catch (_: Exception) {}
