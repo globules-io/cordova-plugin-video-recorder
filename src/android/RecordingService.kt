@@ -49,6 +49,13 @@ class RecordingService : Service() {
         @Volatile
         var captureFrameCallback: ((String?, String?) -> Unit)? = null
 
+        /** True from onCreate until onDestroy. Callers use this to avoid startForegroundService on a live service. */
+        @Volatile
+        var isAlive: Boolean = false
+
+        @Volatile
+        private var activeInstance: RecordingService? = null
+
         private const val STILL_JPEG_QUALITY = 90
     }
 
@@ -94,41 +101,79 @@ class RecordingService : Service() {
         deliverCaptureResult(null, "capture timed out")
     }
 
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private var lastStartId = 0
+
+    /** True after startForeground() has succeeded for this process. */
+    @Volatile
+    private var foregroundStarted = false
+
+    /**
+     * Set while stopRecording/stopPreview closes the camera. The disconnect
+     * callback must not call stopSelf() then: a startForegroundService()
+     * can already be outstanding, and stopping first kills the process.
+     */
+    @Volatile
+    private var intentionalCameraRelease = false
+
+    /** Bumped on every openCamera so a late disconnect cannot stop the next session. */
+    private var cameraGeneration = 0
+
+    /** True once a recording stop has started, until the next openCamera. */
+    private var stopInProgress = false
+
     override fun onCreate() {
         super.onCreate()
+        activeInstance = this
+        isAlive = true
         cameraManager = getSystemService(Context.CAMERA_SERVICE) as CameraManager
         createNotificationChannel()
-        // Do NOT call startForeground here anymore
+        // Do NOT call startForeground here. onStartCommand promotes before it stops.
         Log.d(TAG, "onCreate: pid=${android.os.Process.myPid()} (not yet foreground)")
     }
 
+    override fun onDestroy() {
+        foregroundStarted = false
+        if (activeInstance === this) {
+            activeInstance = null
+            isAlive = false
+        }
+        super.onDestroy()
+    }
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        lastStartId = startId
         try {
             if (intent == null) {
-                Log.w(TAG, "onStartCommand: null intent")
+                Log.w(TAG, "onStartCommand: null intent, stopping")
+                // Sticky restart cannot resume the camera. Promote first when
+                // we can, so stopping a foreground restart is legal.
+                ensureForeground(false)
+                removeNotificationAndStop()
                 return START_NOT_STICKY
             }
 
-            // Promote to foreground only when we receive a real command
-            // and only if we have the camera permission
-            when (intent.action) {
-                "START_RECORDING" -> {
-                    if (!ensureForeground(true)) {
-                        // Permission missing or failed ? stop immediately
-                        stopSelf()
-                        return START_NOT_STICKY
-                    }
+            val action = intent.action
+            // startForegroundService() must reach startForeground() before stopSelf()
+            // or stopForeground(). Stop used to skip that, so ending a session
+            // crashed with ForegroundServiceDidNotStartInTimeException.
+            val isStart = action == "START_RECORDING" || action == "START_PREVIEW"
+            val isStop = action == "STOP_RECORDING" || action == "STOP_PREVIEW"
+            if (isStart || isStop || foregroundStarted) {
+                val showRecording = when (action) {
+                    "START_RECORDING" -> true
+                    "START_PREVIEW" -> false
+                    else -> isRecording
                 }
-                "START_PREVIEW" -> {
-                    if (!ensureForeground(false)) {
-                        // Permission missing or failed ? stop immediately
-                        stopSelf()
-                        return START_NOT_STICKY
-                    }
+                val promoted = ensureForeground(showRecording)
+                if (isStart && !promoted) {
+                    Log.w(TAG, "could not enter foreground for $action")
+                    stopSelf(startId)
+                    return START_NOT_STICKY
                 }
             }
 
-            when (intent.action) {
+            when (action) {
                 "START_RECORDING" -> {
                     try {
                         val resolution = intent.getStringExtra("resolution") ?: "1920x1080"
@@ -209,10 +254,10 @@ class RecordingService : Service() {
                 }
 
                 "STOP_PREVIEW" -> {
-                    try { 
-                         stopPreviewMode() 
+                    try {
+                         stopPreviewMode()
                          if (!isRecording) {
-                              stopForeground(true)
+                              removeNotificationAndStop()
                          }
                     } catch (e: Exception) {
                         Log.w(TAG, "STOP_PREVIEW failed: ${e.message}")
@@ -241,7 +286,7 @@ class RecordingService : Service() {
         ) == android.content.pm.PackageManager.PERMISSION_GRANTED
 
         if (!hasCameraPermission) {
-            Log.w(TAG, "CAMERA permission not granted � cannot start camera foreground service")
+            Log.w(TAG, "CAMERA permission not granted, cannot start camera foreground service")
             return false
         }
 
@@ -260,9 +305,12 @@ class RecordingService : Service() {
             } else {
                 startForeground(1, notification)
             }
+            foregroundStarted = true
             Log.d(TAG, "Service is now in foreground (camera type)")
             true
-        } catch (se: SecurityException) {
+        } catch (se: Exception) {
+            // SecurityException (permission / type) and, on API 31+,
+            // ForegroundServiceStartNotAllowedException when the app is backgrounded.
             Log.e(TAG, "startForeground failed: ${se.message}")
             false
         }
@@ -391,6 +439,9 @@ class RecordingService : Service() {
             val cameraId = findCameraIdForFacing(cameraFacing)
                 ?: cameraManager.cameraIdList.firstOrNull() ?: return
 
+            val generation = ++cameraGeneration
+            intentionalCameraRelease = false
+            stopInProgress = false
             cameraManager.openCamera(cameraId, object : CameraDevice.StateCallback() {
                 override fun onOpened(device: CameraDevice) {
                     cameraDevice = device
@@ -398,17 +449,49 @@ class RecordingService : Service() {
                     createCaptureSession()
                 }
                 override fun onDisconnected(device: CameraDevice) {
-                    device.close()
-                    stopSelf()
+                    onCameraDeviceLost(device, generation)
                 }
                 override fun onError(device: CameraDevice, error: Int) {
-                    device.close()
-                    stopSelf()
+                    Log.w(TAG, "camera error $error")
+                    onCameraDeviceLost(device, generation)
                 }
             }, null)
         } catch (e: SecurityException) {
-            stopSelf()
+            Log.w(TAG, "openCamera failed: ${e.message}")
+            removeNotificationAndStop()
         }
+    }
+
+    /**
+     * Camera2 delivers this on the handler passed to openCamera, which can
+     * run before onStartCommand calls startForeground(). Stopping from here
+     * is what produces "Bringing down service while still waiting for start
+     * foreground" at the end of a session.
+     */
+    private fun onCameraDeviceLost(device: CameraDevice, generation: Int) {
+        try { device.close() } catch (_: Exception) {}
+        mainHandler.post {
+            if (generation != cameraGeneration) return@post
+            val current = cameraDevice
+            if (current != null && current != device) return@post
+            if (current == device) cameraDevice = null
+            if (intentionalCameraRelease) return@post
+            if (!foregroundStarted) return@post
+            Log.w(TAG, "camera lost")
+            if (isRecording) {
+                stopRecording()
+            } else {
+                if (previewEnabled) stopPreviewMode()
+                removeNotificationAndStop()
+            }
+        }
+    }
+
+    private fun closeCameraDevice() {
+        val device = cameraDevice ?: return
+        intentionalCameraRelease = true
+        cameraDevice = null
+        try { device.close() } catch (_: Exception) {}
     }
 
     private fun setupMediaRecorder() {
@@ -443,7 +526,7 @@ class RecordingService : Service() {
 
             setOnInfoListener { _, what, _ ->
                 if (what == MediaRecorder.MEDIA_RECORDER_INFO_MAX_DURATION_REACHED) {
-                    stopRecording()
+                    mainHandler.post { stopRecording() }
                 }
             }
 
@@ -510,21 +593,21 @@ class RecordingService : Service() {
                                 Log.d(TAG, "recording started")
                             } catch (e: Exception) {
                                 Log.w(TAG, "onConfigured failed: ${e.message}")
-                                stopSelf()
+                                removeNotificationAndStop()
                             }
                         }
 
                         override fun onConfigureFailed(session: CameraCaptureSession) {
-                            Log.w(TAG, "onConfigureFailed ? retrying without preview")
+                            Log.w(TAG, "onConfigureFailed, retrying without preview")
                             if (previewEnabled && targetSurfaces.size > 1) {
                                 try {
                                     captureSession?.close()
                                     doCreateSession(listOf(surface))
                                 } catch (e: Exception) {
-                                    stopSelf()
+                                    removeNotificationAndStop()
                                 }
                             } else {
-                                stopSelf()
+                                removeNotificationAndStop()
                             }
                         }
                     },
@@ -533,9 +616,9 @@ class RecordingService : Service() {
             } catch (e: Exception) {
                 Log.w(TAG, "createCaptureSession threw: ${e.message}")
                 if (previewEnabled) {
-                    try { doCreateSession(listOf(surface)) } catch (_: Exception) { stopSelf() }
+                    try { doCreateSession(listOf(surface)) } catch (_: Exception) { removeNotificationAndStop() }
                 } else {
-                    stopSelf()
+                    removeNotificationAndStop()
                 }
             }
         }
@@ -599,7 +682,10 @@ class RecordingService : Service() {
                 return
             }
 
-            // Case 2 ? preview only
+            // Case 2. Preview only. Bump the generation so a disconnect from
+            // the previous device cannot tear down this session.
+            val generation = ++cameraGeneration
+            intentionalCameraRelease = false
             cameraManager.openCamera(cameraId, object : CameraDevice.StateCallback() {
                 override fun onOpened(device: CameraDevice) {
                     cameraDevice = device
@@ -610,20 +696,19 @@ class RecordingService : Service() {
                     }
                 }
                 override fun onDisconnected(device: CameraDevice) {
-                    device.close()
-                    cameraDevice = null
                     if (captureRequested) {
                         captureRequested = false
                         deliverCaptureResult(null, "capture failed")
                     }
+                    onCameraDeviceLost(device, generation)
                 }
                 override fun onError(device: CameraDevice, error: Int) {
-                    device.close()
-                    cameraDevice = null
+                    Log.w(TAG, "preview camera error $error")
                     if (captureRequested) {
                         captureRequested = false
                         deliverCaptureResult(null, "capture failed")
                     }
+                    onCameraDeviceLost(device, generation)
                 }
             }, previewHandler)
         } catch (e: Exception) {
@@ -754,7 +839,7 @@ class RecordingService : Service() {
             captureRequested = false
             deliverCaptureResult(null, "preview is not running")
             if (!isRecording) {
-                try { stopSelf() } catch (_: Exception) {}
+                removeNotificationAndStop()
             }
             return
         }
@@ -975,11 +1060,11 @@ class RecordingService : Service() {
                     null
                 )
             } else {
-                // Not recording ? close everything
+                // Not recording. Close everything. closeCameraDevice marks the
+                // release so the disconnect callback does not stopSelf().
                 try { captureSession?.close() } catch (_: Exception) {}
                 captureSession = null
-                try { cameraDevice?.close() } catch (_: Exception) {}
-                cameraDevice = null
+                closeCameraDevice()
             }
 
             try { previewReader?.setOnImageAvailableListener(null, null) } catch (_: Exception) {}
@@ -1060,6 +1145,14 @@ class RecordingService : Service() {
     // Stop recording + watermark + gallery
     // ----------------------------------------------------------------------
      private fun stopRecording() {
+          if (Looper.myLooper() != Looper.getMainLooper()) {
+               mainHandler.post { stopRecording() }
+               return
+          }
+          // Camera-loss and max-duration can both land while a user stop is
+          // already tearing down. A second entry would clear the finish callback.
+          if (stopInProgress) return
+
           if (!isRecording) {
                stopWithCallback?.invoke(null, null, null)
                stopWithCallback = null
@@ -1068,6 +1161,7 @@ class RecordingService : Service() {
                return
           }
 
+          stopInProgress = true
           isRecording = false
 
           // Stop camera & recorder
@@ -1082,8 +1176,7 @@ class RecordingService : Service() {
 
           try { captureSession?.close() } catch (_: Exception) {}
           captureSession = null
-          try { cameraDevice?.close() } catch (_: Exception) {}
-          cameraDevice = null
+          closeCameraDevice()
 
           cleanupPreview()
 
@@ -1131,6 +1224,13 @@ class RecordingService : Service() {
      }
 
      private fun removeNotificationAndStop() {
+          if (Looper.myLooper() != Looper.getMainLooper()) {
+               mainHandler.post { removeNotificationAndStop() }
+               return
+          }
+          // Drop the foreground state only after startForeground() has run
+          // for this start. stopSelf(startId) will not cancel a newer start.
+          foregroundStarted = false
           try {
                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
                     stopForeground(Service.STOP_FOREGROUND_REMOVE)
@@ -1141,7 +1241,7 @@ class RecordingService : Service() {
           } catch (e: Exception) {
                Log.w(TAG, "stopForeground failed: ${e.message}")
           }
-          stopSelf()
+          stopSelf(lastStartId)
      }
 
     // ----------------------------------------------------------------------

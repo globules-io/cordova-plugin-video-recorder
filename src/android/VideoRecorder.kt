@@ -88,6 +88,10 @@ class VideoRecorder : CordovaPlugin() {
             callbackContext.error("No activity")
             return
         }
+        if (!hasCameraPermission(activity)) {
+            callbackContext.error("CAMERA permission not granted")
+            return
+        }
 
         currentCallback = callbackContext
 
@@ -142,12 +146,12 @@ class VideoRecorder : CordovaPlugin() {
             putExtra("watermarkPosition", watermarkPosition)
         }
 
-        activity.runOnUiThread {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                activity.startForegroundService(intent)
-            } else {
-                activity.startService(intent)
-            }
+        // Start is the only path that may use startForegroundService. The service
+        // calls startForeground() before it does any other work.
+        enqueueService(intent, foreground = true) { message ->
+            RecordingService.stopWithCallback = null
+            currentCallback?.error(message)
+            currentCallback = null
         }
     }
 
@@ -161,7 +165,10 @@ class VideoRecorder : CordovaPlugin() {
             action = "STOP_RECORDING"
         }
 
-        activity.startService(intent)
+        // startService, not startForegroundService. Stop often destroys the
+        // service in the same turn. A foreground start that has not yet called
+        // startForeground() crashes the process.
+        enqueueService(intent, foreground = false)
         callbackContext.success()
     }
 
@@ -172,6 +179,10 @@ class VideoRecorder : CordovaPlugin() {
     private fun startPreview(args: JSONArray, callbackContext: CallbackContext) {
         val activity = cordova.activity ?: run {
             callbackContext.error("No activity")
+            return
+        }
+        if (!hasCameraPermission(activity)) {
+            callbackContext.error("CAMERA permission not granted")
             return
         }
 
@@ -226,15 +237,7 @@ class VideoRecorder : CordovaPlugin() {
                         val stopIntent = Intent(currentAct, RecordingService::class.java).apply {
                             action = "STOP_PREVIEW"
                         }
-                        currentAct.runOnUiThread {
-                            try {
-                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                                    currentAct.startForegroundService(stopIntent)
-                                } else {
-                                    currentAct.startService(stopIntent)
-                                }
-                            } catch (_: Exception) { /* ignore */ }
-                        }
+                        enqueueService(stopIntent, foreground = false)
                     }
                 } catch (_: Exception) { /* ignore */ }
             }
@@ -249,20 +252,12 @@ class VideoRecorder : CordovaPlugin() {
             putExtra("scale", scale)
         }
 
-        activity.runOnUiThread {
+        enqueueService(intent, foreground = true) { message ->
+            RecordingService.previewFrameCallback = null
+            previewCallback = null
             try {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    activity.startForegroundService(intent)
-                } else {
-                    activity.startService(intent)
-                }
-            } catch (e: Exception) {
-                RecordingService.previewFrameCallback = null
-                previewCallback = null
-                try {
-                    callbackContext.error("Failed to start preview service: ${e.message}")
-                } catch (_: Exception) {}
-            }
+                callbackContext.error("Failed to start preview service: $message")
+            } catch (_: Exception) {}
         }
     }
 
@@ -281,15 +276,7 @@ class VideoRecorder : CordovaPlugin() {
         val intent = Intent(activity, RecordingService::class.java).apply {
             action = "STOP_PREVIEW"
         }
-        activity.runOnUiThread {
-            try {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    activity.startForegroundService(intent)
-                } else {
-                    activity.startService(intent)
-                }
-            } catch (_: Exception) { /* ignore */ }
-        }
+        enqueueService(intent, foreground = false)
     }
 
     /**
@@ -363,6 +350,48 @@ class VideoRecorder : CordovaPlugin() {
         super.onDestroy()
         requestStopPreviewFromPlugin()
         requestStopRecordingFromPlugin()
+    }
+
+    private fun hasCameraPermission(activity: android.app.Activity): Boolean {
+        return androidx.core.content.ContextCompat.checkSelfPermission(
+            activity,
+            android.Manifest.permission.CAMERA
+        ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+    }
+
+    /**
+     * [foreground] is true only for start commands. Those call startForeground()
+     * before any stop. Stop commands must use startService(); a foreground
+     * start that stops itself first throws ForegroundServiceDidNotStartInTimeException.
+     */
+    private fun enqueueService(
+        intent: Intent,
+        foreground: Boolean,
+        onError: ((String) -> Unit)? = null
+    ) {
+        val activity = cordova.activity ?: run {
+            onError?.invoke("No activity")
+            return
+        }
+        activity.runOnUiThread {
+            try {
+                // startForegroundService() arms a timer that is only cleared by
+                // startForeground(). Do not arm it for stop, or for a service
+                // that is already alive: both of those stop or restart in the
+                // same turn at the end of a session.
+                val coldForegroundStart = foreground &&
+                    !RecordingService.isAlive &&
+                    Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
+                if (coldForegroundStart) {
+                    activity.startForegroundService(intent)
+                } else {
+                    activity.startService(intent)
+                }
+            } catch (e: Exception) {
+                Log.w("VideoRecorder", "enqueueService ${intent.action} failed: ${e.message}")
+                onError?.invoke(e.message ?: "Failed to start service")
+            }
+        }
     }
 
     private fun parseResolution(value: String): String? {
