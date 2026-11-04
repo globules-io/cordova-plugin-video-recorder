@@ -98,7 +98,7 @@ class VideoRecorder : CordovaPlugin() {
         val options: JSONObject = args.optJSONObject(0) ?: JSONObject()
 
         val bitrateRaw = if (options.has("bitrate")) options.optInt("bitrate", DEFAULT_BITRATE) else DEFAULT_BITRATE
-        val maxLengthRaw = if (options.has("maxLength")) options.optInt("maxLength", DEFAULT_MAX_LENGTH) else DEFAULT_MAX_LENGTH
+        val maxLengthRaw = readSeconds(options, "maxLength")
         val saveToGallery = if (options.has("saveToGallery")) options.optBoolean("saveToGallery", false) else false
         val bitrate = if (bitrateRaw > 0) bitrateRaw else DEFAULT_BITRATE
         val maxLength = if (maxLengthRaw > 0) maxLengthRaw else 0
@@ -370,6 +370,20 @@ class VideoRecorder : CordovaPlugin() {
         super.onDestroy()
         requestStopPreviewFromPlugin()
         requestStopRecordingFromPlugin()
+    }
+
+    /** Seconds, or 0 when the key is missing or not a number. */
+    private fun readSeconds(options: JSONObject, key: String): Int {
+        if (!options.has(key)) return 0
+        val value = options.opt(key)
+        return when (value) {
+            is Number -> value.toInt()
+            is String -> value.toIntOrNull() ?: 0
+            else -> {
+                Log.w("VideoRecorder", "$key must be a number of seconds, got $value")
+                0
+            }
+        }
     }
 
     private fun hasCameraPermission(activity: android.app.Activity): Boolean {
