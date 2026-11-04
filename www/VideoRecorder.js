@@ -6,6 +6,9 @@ var exec = require('cordova/exec');
  *
  * startRecording options: { maxLength, bitrate, saveToGallery, watermark }
  *   defaults: maxLength 0, bitrate 10000000, saveToGallery false, watermark off
+ *   Reaching maxLength dispatches VideoRecorderTimeLimit with detail.maxLength,
+ *   then VideoRecorderFinished when the file is ready. A manual stop does not
+ *   dispatch VideoRecorderTimeLimit.
  *
  * startPreview options: { scale, fps, quality }
  *   defaults: scale 0.3, fps 10, quality 40

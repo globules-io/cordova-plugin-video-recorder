@@ -40,6 +40,8 @@ VideoRecorder.startRecording({
 });
 ```
 
+`maxLength` is seconds of recorded video. `0` leaves the recording running until `stopRecording()`. A value above `0` stops the recording on both Android and iOS when that duration is reached. The clock starts when the native recorder starts, not when `startRecording()` is called.
+
 Stop recording
 ```js
 VideoRecorder.stopRecording();
@@ -55,7 +57,17 @@ VideoRecorder.startRecording({
 });
 ```
 
-Playback
+Events
+
+`VideoRecorderTimeLimit` fires when a `maxLength` limit ends the take. `detail.maxLength` is that limit in seconds. `stopRecording()` does not fire this event. The file is not ready yet. `VideoRecorderFinished` follows when it is.
+
+```js
+document.addEventListener("VideoRecorderTimeLimit", e => {
+    console.log("stopped after", e.detail.maxLength, "seconds");
+});
+```
+
+`VideoRecorderFinished` fires when the file is ready, whether the limit was reached or `stopRecording()` was called. `detail.file` is a `file://` URL. `detail.width` and `detail.height` are the recorded size in pixels.
 
 cordova-plugin-file is needed for resolveLocalFileSystemURL
 ```js
