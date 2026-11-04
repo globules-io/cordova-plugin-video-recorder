@@ -118,17 +118,18 @@ class VideoRecorder : CordovaPlugin() {
         // CALLBACK FROM RecordingService
         val limitSeconds = maxLength
         RecordingService.timeLimitCallback = {
-            if (limitSeconds <= 0) return@timeLimitCallback
-            val js = """
-                document.dispatchEvent(new CustomEvent('VideoRecorderTimeLimit', {
-                    detail: { maxLength: $limitSeconds }
-                }));
-            """.trimIndent()
-            activity.runOnUiThread {
-                try {
-                    webView.loadUrl("javascript:$js")
-                } catch (e: Exception) {
-                    Log.w("VideoRecorder", "VideoRecorderTimeLimit failed: ${e.message}")
+            if (limitSeconds > 0) {
+                val js = """
+                    document.dispatchEvent(new CustomEvent('VideoRecorderTimeLimit', {
+                        detail: { maxLength: $limitSeconds }
+                    }));
+                """.trimIndent()
+                activity.runOnUiThread {
+                    try {
+                        webView.loadUrl("javascript:$js")
+                    } catch (e: Exception) {
+                        Log.w("VideoRecorder", "VideoRecorderTimeLimit failed: ${e.message}")
+                    }
                 }
             }
         }
