@@ -39,6 +39,7 @@ class RecordingService : Service() {
 
     companion object {
         var stopWithCallback: ((String?, Int?, Int?) -> Unit)? = null
+        var timeLimitCallback: (() -> Unit)? = null
         private const val CHANNEL_ID = "video_recorder_channel"
         private const val TAG = "RecordingService"
 
@@ -70,6 +71,12 @@ class RecordingService : Service() {
     private var videoHeight = 1080
     private var videoBitrate = 10_000_000
     private var maxLengthSec = 0
+    private var timeLimitSent = false
+    private val maxLengthStop = Runnable {
+        if (!isRecording || stopInProgress) return@Runnable
+        notifyTimeLimit()
+        stopRecording()
+    }
     private var isRecording = false
     private var cameraFacing: Int = CameraCharacteristics.LENS_FACING_BACK
     private var saveToGallery: Boolean = false
@@ -133,6 +140,7 @@ class RecordingService : Service() {
     }
 
     override fun onDestroy() {
+        cancelMaxLength()
         foregroundStarted = false
         if (activeInstance === this) {
             activeInstance = null
@@ -197,6 +205,8 @@ class RecordingService : Service() {
                         }
                         videoBitrate = if (bitrate > 0) bitrate else 10_000_000
                         maxLengthSec = if (maxLength > 0) maxLength else 0
+                        timeLimitSent = false
+                        Log.d(TAG, "START_RECORDING maxLength=${maxLengthSec}s")
                         cameraFacing = if (camera.lowercase(Locale.US) == "front") {
                             CameraCharacteristics.LENS_FACING_FRONT
                         } else {
@@ -487,6 +497,38 @@ class RecordingService : Service() {
         }
     }
 
+    /**
+     * setMaxDuration() is supposed to stop the recorder and emit
+     * MEDIA_RECORDER_INFO_MAX_DURATION_REACHED. Camera2 surface input often
+     * does neither, so the clock starts when recording actually starts.
+     */
+    private fun scheduleMaxLength() {
+        mainHandler.removeCallbacks(maxLengthStop)
+        if (maxLengthSec <= 0) return
+        Log.d(TAG, "maxLength armed for ${maxLengthSec}s")
+        mainHandler.postDelayed(maxLengthStop, maxLengthSec * 1000L)
+    }
+
+    private fun cancelMaxLength() {
+        mainHandler.removeCallbacks(maxLengthStop)
+    }
+
+    /** Fires once when maxLength ends the take. A manual stop does not call this. */
+    private fun notifyTimeLimit() {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            mainHandler.post { notifyTimeLimit() }
+            return
+        }
+        if (maxLengthSec <= 0 || timeLimitSent || !isRecording || stopInProgress) return
+        timeLimitSent = true
+        Log.d(TAG, "maxLength reached (${maxLengthSec}s)")
+        try {
+            timeLimitCallback?.invoke()
+        } catch (e: Exception) {
+            Log.w(TAG, "time limit callback failed: ${e.message}")
+        }
+    }
+
     private fun closeCameraDevice() {
         val device = cameraDevice ?: return
         intentionalCameraRelease = true
@@ -526,7 +568,11 @@ class RecordingService : Service() {
 
             setOnInfoListener { _, what, _ ->
                 if (what == MediaRecorder.MEDIA_RECORDER_INFO_MAX_DURATION_REACHED) {
-                    mainHandler.post { stopRecording() }
+                    Log.d(TAG, "MediaRecorder max duration reached")
+                    mainHandler.post {
+                        notifyTimeLimit()
+                        stopRecording()
+                    }
                 }
             }
 
@@ -590,6 +636,7 @@ class RecordingService : Service() {
                                 session.setRepeatingRequest(requestBuilder.build(), null, previewHandler)
                                 mediaRecorder?.start()
                                 isRecording = true
+                                scheduleMaxLength()
                                 Log.d(TAG, "recording started")
                             } catch (e: Exception) {
                                 Log.w(TAG, "onConfigured failed: ${e.message}")
@@ -1149,6 +1196,7 @@ class RecordingService : Service() {
                mainHandler.post { stopRecording() }
                return
           }
+          cancelMaxLength()
           // Camera-loss and max-duration can both land while a user stop is
           // already tearing down. A second entry would clear the finish callback.
           if (stopInProgress) return
@@ -1228,6 +1276,7 @@ class RecordingService : Service() {
                mainHandler.post { removeNotificationAndStop() }
                return
           }
+          cancelMaxLength()
           // Drop the foreground state only after startForeground() has run
           // for this start. stopSelf(startId) will not cancel a newer start.
           foregroundStarted = false

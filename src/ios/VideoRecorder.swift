@@ -15,6 +15,8 @@ class VideoRecorder: CDVPlugin {
     var callbackId: String?
 
     var maxLengthSec: Int = 0
+    private let timeLimitLock = NSLock()
+    private var timeLimitEventSent = false
     var videoWidth: Int = 1920
     var videoHeight: Int = 1080
     var bitrate: Int = 10_000_000
@@ -114,6 +116,9 @@ class VideoRecorder: CDVPlugin {
 
         let requestedLength = intOption(options, "maxLength", fallback: 0)
         maxLengthSec = requestedLength > 0 ? requestedLength : 0
+        timeLimitLock.lock()
+        timeLimitEventSent = false
+        timeLimitLock.unlock()
 
         let requestedBitrate = intOption(options, "bitrate", fallback: 10_000_000)
         bitrate = requestedBitrate > 0 ? requestedBitrate : 10_000_000
@@ -378,6 +383,7 @@ class VideoRecorder: CDVPlugin {
                 self.stopTimer = Timer(timeInterval: Double(self.maxLengthSec) + 0.5, repeats: false) { [weak self] _ in
                     guard let self = self else { return }
                     NSLog("[VideoRecorder] maxLength timer fired stopping recording")
+                    self.dispatchTimeLimit()
                     self.stopRecording()
                 }
                 if let t = self.stopTimer {
@@ -604,6 +610,29 @@ class VideoRecorder: CDVPlugin {
             UIApplication.shared.endBackgroundTask(backgroundTask)
             backgroundTask = .invalid
             NSLog("[VideoRecorder] Background task ended")
+        }
+    }
+
+    /// Posted once when maxLength ends the take. A manual stop does not call this.
+    private func dispatchTimeLimit() {
+        let seconds = maxLengthSec
+        timeLimitLock.lock()
+        let shouldSend = seconds > 0 && !timeLimitEventSent
+        if shouldSend { timeLimitEventSent = true }
+        timeLimitLock.unlock()
+        guard shouldSend else { return }
+
+        NSLog("[VideoRecorder] maxLength reached (\(seconds)s)")
+        let js = """
+        document.dispatchEvent(new CustomEvent('VideoRecorderTimeLimit', {
+            detail: { maxLength: \(seconds) }
+        }));
+        """
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            self.stopTimer?.invalidate()
+            self.stopTimer = nil
+            self.webViewEngine.evaluateJavaScript(js, completionHandler: nil)
         }
     }
 
@@ -924,6 +953,12 @@ extension VideoRecorder: AVCaptureFileOutputRecordingDelegate {
                     error: Error?) {
 
         NSLog("[VideoRecorder] didFinishRecording  error=\(String(describing: error)), file=\(outputFileURL.lastPathComponent)")
+
+        if let nsError = error as NSError?,
+           nsError.domain == AVFoundationErrorDomain,
+           nsError.code == AVError.maximumDurationReached.rawValue {
+            dispatchTimeLimit()
+        }
 
         // Stop the session on the recording queue
         recordingQueue.async { [weak self] in

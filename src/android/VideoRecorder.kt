@@ -102,6 +102,7 @@ class VideoRecorder : CordovaPlugin() {
         val saveToGallery = if (options.has("saveToGallery")) options.optBoolean("saveToGallery", false) else false
         val bitrate = if (bitrateRaw > 0) bitrateRaw else DEFAULT_BITRATE
         val maxLength = if (maxLengthRaw > 0) maxLengthRaw else 0
+        Log.d("VideoRecorder", "startRecording maxLength=$maxLength")
 
         var watermarkEnabled = false
         var watermarkImage: String? = null
@@ -115,6 +116,23 @@ class VideoRecorder : CordovaPlugin() {
         }
 
         // CALLBACK FROM RecordingService
+        val limitSeconds = maxLength
+        RecordingService.timeLimitCallback = {
+            if (limitSeconds <= 0) return@timeLimitCallback
+            val js = """
+                document.dispatchEvent(new CustomEvent('VideoRecorderTimeLimit', {
+                    detail: { maxLength: $limitSeconds }
+                }));
+            """.trimIndent()
+            activity.runOnUiThread {
+                try {
+                    webView.loadUrl("javascript:$js")
+                } catch (e: Exception) {
+                    Log.w("VideoRecorder", "VideoRecorderTimeLimit failed: ${e.message}")
+                }
+            }
+        }
+
         RecordingService.stopWithCallback = { filePath: String?, videoWidth: Int?, videoHeight: Int? ->
             val safePath: String = filePath ?: ""
             val safeWidth: Int = videoWidth ?: 0
@@ -150,6 +168,7 @@ class VideoRecorder : CordovaPlugin() {
         // calls startForeground() before it does any other work.
         enqueueService(intent, foreground = true) { message ->
             RecordingService.stopWithCallback = null
+            RecordingService.timeLimitCallback = null
             currentCallback?.error(message)
             currentCallback = null
         }
