@@ -173,8 +173,8 @@ class VideoRecorder: CDVPlugin {
         previewScale = CGFloat(scale > 0 ? scale : 0.3)
 
         previewCameraPosition = cameraPosition
-        previewWidth = max(1, Int((CGFloat(videoWidth) * previewScale).rounded()))
-        previewHeight = max(1, Int((CGFloat(videoHeight) * previewScale).rounded()))
+        previewWidth = evenDimension(Int((CGFloat(videoWidth) * previewScale).rounded()))
+        previewHeight = evenDimension(Int((CGFloat(videoHeight) * previewScale).rounded()))
 
         NSLog("[VideoRecorder] startPreview fps=\(previewTargetFps), quality=\(previewJpegQuality), scale=\(previewScale), camera=\(previewCameraPosition == .front ? "front" : "back"), res=\(previewWidth)x\(previewHeight), callbackId=\(command.callbackId ?? "nil")")
 
@@ -552,6 +552,12 @@ class VideoRecorder: CDVPlugin {
         }
         // NOTE: We deliberately do NOT clear previewCallbackId here.
         // It is cleared only in stopPreview so that late frames don't kill the session.
+    }
+
+    /// YUV and JPEG sizes need even sides. An odd scaled side is raised by one.
+    private func evenDimension(_ value: Int) -> Int {
+        let sized = max(1, value)
+        return sized % 2 == 0 ? sized : sized + 1
     }
 
     //  JPEG

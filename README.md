@@ -94,7 +94,7 @@ VideoRecorder.setCamera({
 });
 
 VideoRecorder.startPreview({
-    scale: 0.3,                 // preview size = resolution * scale
+    scale: 0.3,                 // preview size = resolution * scale, each side raised to the next even number
     fps: 10,                    // frames per second
     quality: 40                 // jpeg quality, 1-100
 }, function (frame) {
