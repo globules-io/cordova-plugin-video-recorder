@@ -362,8 +362,14 @@ class RecordingService : Service() {
         }
         captureWidth = w
         captureHeight = h
-        previewWidth = (w * safeScale).toInt().coerceAtLeast(1)
-        previewHeight = (h * safeScale).toInt().coerceAtLeast(1)
+        // YUV rows must be even. 1024 * 0.3 is 307, so bump an odd side by one.
+        previewWidth = evenDimension((w * safeScale).toInt())
+        previewHeight = evenDimension((h * safeScale).toInt())
+    }
+
+    private fun evenDimension(value: Int): Int {
+        val sized = value.coerceAtLeast(1)
+        return if (sized % 2 == 0) sized else sized + 1
     }
 
     private fun findCameraIdForFacing(facing: Int): String? {
@@ -696,22 +702,23 @@ class RecordingService : Service() {
                 return
             }
 
-            // Choose a real supported size (prefer exact / rotated match)
+            // The camera rarely has the scaled size. Grab a supported buffer, then
+            // crop and scale each frame back to previewWidth x previewHeight.
             val best = chooseBestSize(
                 cameraId,
                 previewWidth,
                 previewHeight,
                 imageFormat = ImageFormat.YUV_420_888
             )
-            if (best != null) {
-                previewWidth = best.width
-                previewHeight = best.height
-                Log.d(TAG, "preview chosen size = ${previewWidth}x${previewHeight}")
-            }
+            val bufferW = best?.width ?: previewWidth
+            val bufferH = best?.height ?: previewHeight
+            Log.d(TAG, "preview output ${previewWidth}x${previewHeight}, camera buffer ${bufferW}x${bufferH}")
 
-            if (previewReader == null) {
+            val existingReader = previewReader
+            if (existingReader == null || existingReader.width != bufferW || existingReader.height != bufferH) {
+                try { existingReader?.close() } catch (_: Exception) {}
                 previewReader = ImageReader.newInstance(
-                    previewWidth, previewHeight,
+                    bufferW, bufferH,
                     ImageFormat.YUV_420_888, 2
                 )
             }
@@ -988,9 +995,14 @@ class RecordingService : Service() {
                 previewHandler?.post {
                     if (!previewEnabled || previewFrameCallback == null) return@post
                     try {
-                        // Single high-quality JPEG + correct orientation
                         val jpegBytes = nv21ToJpeg(nv21, width, height, previewJpegQuality)
-                        val finalJpeg = applySensorOrientation(jpegBytes)
+                        val oriented = applySensorOrientation(
+                            jpegBytes,
+                            quality = previewJpegQuality,
+                            referenceWidth = previewWidth,
+                            referenceHeight = previewHeight
+                        )
+                        val finalJpeg = fitPreviewOutput(oriented)
                         val b64 = android.util.Base64.encodeToString(finalJpeg, android.util.Base64.NO_WRAP)
                         previewFrameCallback?.invoke("data:image/jpeg;base64,$b64")
                     } catch (e: Exception) {
@@ -1002,6 +1014,70 @@ class RecordingService : Service() {
                 Log.w(TAG, "onImageAvailable error: ${e.message}")
             }
         }, previewHandler)
+    }
+
+    /**
+     * Center-crop to the scaled aspect, then scale to previewWidth x previewHeight.
+     * The camera buffer is usually 4:3 or 16:9, so sending it unchanged stretches a square request.
+     */
+    private fun fitPreviewOutput(jpegBytes: ByteArray): ByteArray {
+        val bitmap = BitmapFactory.decodeByteArray(jpegBytes, 0, jpegBytes.size) ?: return jpegBytes
+        val (targetW, targetH) = orientedPreviewSize(bitmap.width, bitmap.height)
+        if (targetW <= 0 || targetH <= 0) {
+            bitmap.recycle()
+            return jpegBytes
+        }
+        if (bitmap.width == targetW && bitmap.height == targetH) {
+            bitmap.recycle()
+            return jpegBytes
+        }
+        val fitted = centerCropScale(bitmap, targetW, targetH)
+        val out = ByteArrayOutputStream()
+        fitted.compress(Bitmap.CompressFormat.JPEG, previewJpegQuality, out)
+        if (fitted != bitmap) fitted.recycle()
+        bitmap.recycle()
+        return out.toByteArray()
+    }
+
+    /**
+     * previewWidth x previewHeight is the scaled setCamera size. After the sensor
+     * buffer is rotated upright, a 1920x1080 request is 1080x1920. Pick whichever
+     * order matches the upright frame. A square request stays square.
+     */
+    private fun orientedPreviewSize(srcW: Int, srcH: Int): Pair<Int, Int> {
+        if (previewWidth <= 0 || previewHeight <= 0 || srcW <= 0 || srcH <= 0) {
+            return previewWidth to previewHeight
+        }
+        val targetAspect = previewWidth.toFloat() / previewHeight
+        val swappedAspect = previewHeight.toFloat() / previewWidth
+        val srcAspect = srcW.toFloat() / srcH
+        val useRequested = kotlin.math.abs(srcAspect - targetAspect) <= kotlin.math.abs(srcAspect - swappedAspect)
+        return if (useRequested) previewWidth to previewHeight else previewHeight to previewWidth
+    }
+
+    private fun centerCropScale(src: Bitmap, targetW: Int, targetH: Int): Bitmap {
+        val targetAspect = targetW.toFloat() / targetH
+        val srcAspect = src.width.toFloat() / src.height
+        val cropW: Int
+        val cropH: Int
+        if (srcAspect > targetAspect) {
+            cropH = src.height
+            cropW = (src.height * targetAspect).toInt().coerceIn(1, src.width)
+        } else {
+            cropW = src.width
+            cropH = (src.width / targetAspect).toInt().coerceIn(1, src.height)
+        }
+        val x = (src.width - cropW) / 2
+        val y = (src.height - cropH) / 2
+        val cropped = if (cropW == src.width && cropH == src.height) {
+            src
+        } else {
+            Bitmap.createBitmap(src, x, y, cropW, cropH)
+        }
+        if (cropped.width == targetW && cropped.height == targetH) return cropped
+        val scaled = Bitmap.createScaledBitmap(cropped, targetW, targetH, true)
+        if (cropped != src && cropped != scaled) cropped.recycle()
+        return scaled
     }
 
     private fun nv21ToJpeg(nv21: ByteArray, width: Int, height: Int, quality: Int): ByteArray {
